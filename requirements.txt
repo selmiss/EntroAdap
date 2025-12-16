@@ -1,0 +1,10 @@
+datasets
+transformers
+trl
+deepspeed
+liger-kernel
+peft
+
+# Testing dependencies
+pytest
+pytest-cov

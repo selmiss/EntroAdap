@@ -1,0 +1,51 @@
+# Multi-modal fine-tuning configuration for FAST TESTING with small Qwen2 model
+# Model configuration
+model_name_or_path: Qwen/Qwen2-0.5B  # Small but realistic Qwen2 model (~1GB)
+
+# Dataset configuration
+dataset_name: data/mock_train.jsonl
+
+# Tokenizer configuration
+eos_token: '<|endoftext|>'  # Qwen2 uses this token
+
+# Training hyperparameters
+learning_rate: 5.0e-4
+num_train_epochs: 1  # Quick test - just 1 epoch
+max_length: 256  # Moderate length for testing
+per_device_train_batch_size: 2
+
+# Optimization settings
+gradient_checkpointing: true  # Enable for memory efficiency
+bf16: true  # Use bf16 like production
+use_liger_kernel: false  # Test Liger integration
+
+# LoRA/PEFT configuration
+use_peft: true  # Test with PEFT like production
+lora_r: 8  # Smaller rank for faster testing
+lora_alpha: 16
+lora_dropout: 0.05
+
+# DeepSpeed configuration - optional for testing
+# deepspeed: configs/deepspeed/ds_config_zero2.json
+
+# Output configuration
+output_dir: ./checkpoints/multimodal_test_tiny/Qwen2-0.5B
+
+# Logging and evaluation
+logging_steps: 1  # Log every step for testing
+save_strategy: "no"  # Don't save checkpoints for testing
+save_total_limit: 1
+
+# Training strategy
+eval_strategy: "no"
+report_to: []
+
+# Multi-modal configuration - scaled for Qwen2-0.5B
+use_custom_model: true
+modality_vocab_size: 5000  # Reasonable size for testing
+modality_embedding_dim: 896  # Match Qwen2-0.5B hidden_size=896
+num_fusion_blocks: 2  # Fewer blocks for faster testing
+num_attention_heads: 14  # Match Qwen2-0.5B (it has 14 heads)
+fusion_hidden_dim: null  # defaults to modality_embedding_dim
+fusion_intermediate_dim: null  # defaults to 4 * fusion_hidden_dim
+dropout: 0.1
