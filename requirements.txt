@@ -4,6 +4,14 @@ trl
 deepspeed
 liger-kernel
 peft
+numpy
+openai
+tqdm
+
+# For protein structure extraction
+gemmi
+
+
 
 # Testing dependencies
 pytest
