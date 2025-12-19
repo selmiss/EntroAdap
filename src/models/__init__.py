@@ -13,10 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .components.egnn_backbone import EGNNBackbone, EGNNLayer
 from .fusion_blocks import FeedForward, FusionBlock
 from .multimodal_llm import MultiModalLLM
+from .components.feature_embedder import FeatureEmbedder
+from .geo_encoder import GeoEncoder
 
 __all__ = [
+    "EGNNBackbone",
+    "EGNNLayer",
+    "FeatureEmbedder",
+    "GeoEncoder",
     "FeedForward",
     "FusionBlock",
     "MultiModalLLM",

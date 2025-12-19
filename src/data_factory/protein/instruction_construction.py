@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Literal
 from tqdm import tqdm
 
 from utils.gpt_helper.openai_api import run_batch_requests
-from src.data_factory.protein.cif_to_cooridinates import (
+from .cif_to_cooridinates import (
     parse_cif_atoms,
     get_ca_atoms,
     get_backbone_atoms,

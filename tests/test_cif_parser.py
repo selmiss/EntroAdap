@@ -8,7 +8,11 @@ from src.data_factory.protein.cif_to_cooridinates import (
     get_ca_atoms,
     get_backbone_atoms,
     coordinates_to_array,
-    get_structure_info
+    get_structure_info,
+    atom_info_to_feature_vector,
+    atom_info_list_to_features,
+    get_atom_feature_dims,
+    PROTEIN_ATOM_FEATURES
 )
 
 
@@ -347,3 +351,326 @@ class TestEdgeCases:
         
         assert failed is not None
         assert isinstance(failed, list)
+
+
+class TestProteinAtomFeatures:
+    """Tests for PROTEIN_ATOM_FEATURES dictionary."""
+    
+    def test_features_dict_structure(self):
+        """Test that PROTEIN_ATOM_FEATURES has all required keys."""
+        assert 'atom_names' in PROTEIN_ATOM_FEATURES
+        assert 'residue_names' in PROTEIN_ATOM_FEATURES
+        assert 'elements' in PROTEIN_ATOM_FEATURES
+        assert 'chains' in PROTEIN_ATOM_FEATURES
+    
+    def test_features_are_lists(self):
+        """Test that all feature values are lists."""
+        for key, value in PROTEIN_ATOM_FEATURES.items():
+            assert isinstance(value, list), f"{key} should be a list"
+            assert len(value) > 0, f"{key} should not be empty"
+    
+    def test_features_contain_misc(self):
+        """Test that all features have 'misc' as last element."""
+        assert PROTEIN_ATOM_FEATURES['atom_names'][-1] == 'misc'
+        assert PROTEIN_ATOM_FEATURES['residue_names'][-1] == 'misc'
+        assert PROTEIN_ATOM_FEATURES['elements'][-1] == 'misc'
+        assert PROTEIN_ATOM_FEATURES['chains'][-1] == 'misc'
+    
+    def test_backbone_atoms_present(self):
+        """Test that backbone atoms are in atom_names."""
+        backbone_atoms = {'N', 'CA', 'C', 'O'}
+        atom_names = PROTEIN_ATOM_FEATURES['atom_names']
+        for atom in backbone_atoms:
+            assert atom in atom_names
+    
+    def test_standard_amino_acids_present(self):
+        """Test that all 20 standard amino acids are present."""
+        standard_aa = ['ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 
+                      'GLY', 'HIS', 'ILE', 'LEU', 'LYS', 'MET', 'PHE', 
+                      'PRO', 'SER', 'THR', 'TRP', 'TYR', 'VAL']
+        residue_names = PROTEIN_ATOM_FEATURES['residue_names']
+        for aa in standard_aa:
+            assert aa in residue_names
+    
+    def test_common_elements_present(self):
+        """Test that common protein elements are present."""
+        common_elements = ['C', 'N', 'O', 'S']
+        elements = PROTEIN_ATOM_FEATURES['elements']
+        for elem in common_elements:
+            assert elem in elements
+
+
+class TestAtomInfoToFeatureVector:
+    """Tests for atom_info_to_feature_vector function."""
+    
+    def test_basic_conversion_without_properties(self):
+        """Test basic conversion without properties."""
+        atom_info = {
+            'atom_name': 'CA',
+            'residue_name': 'ALA',
+            'residue_id': '1',
+            'chain': 'A',
+            'element': 'C'
+        }
+        
+        feature_vec = atom_info_to_feature_vector(atom_info)
+        
+        # Should return 7 features
+        assert len(feature_vec) == 7
+        assert all(isinstance(f, int) for f in feature_vec)
+    
+    def test_backbone_flag_for_backbone_atoms(self):
+        """Test is_backbone flag is set correctly for backbone atoms."""
+        backbone_atoms = ['N', 'CA', 'C', 'O']
+        
+        for atom_name in backbone_atoms:
+            atom_info = {
+                'atom_name': atom_name,
+                'residue_name': 'ALA',
+                'residue_id': '1',
+                'chain': 'A',
+                'element': 'C' if atom_name != 'N' and atom_name != 'O' else atom_name
+            }
+            feature_vec = atom_info_to_feature_vector(atom_info)
+            
+            # Index 5 is is_backbone
+            assert feature_vec[5] == 1, f"{atom_name} should be marked as backbone"
+    
+    def test_backbone_flag_for_sidechain_atoms(self):
+        """Test is_backbone flag is set correctly for sidechain atoms."""
+        sidechain_atoms = ['CB', 'CG', 'CD', 'CE', 'NZ', 'OG', 'SG']
+        
+        for atom_name in sidechain_atoms:
+            atom_info = {
+                'atom_name': atom_name,
+                'residue_name': 'LYS',
+                'residue_id': '1',
+                'chain': 'A',
+                'element': 'C'
+            }
+            feature_vec = atom_info_to_feature_vector(atom_info)
+            
+            # Index 5 is is_backbone
+            assert feature_vec[5] == 0, f"{atom_name} should not be marked as backbone"
+    
+    def test_ca_flag_only_for_ca(self):
+        """Test is_ca flag is only set for CA atoms."""
+        # Test CA atom
+        atom_info_ca = {
+            'atom_name': 'CA',
+            'residue_name': 'ALA',
+            'residue_id': '1',
+            'chain': 'A',
+            'element': 'C'
+        }
+        feature_vec_ca = atom_info_to_feature_vector(atom_info_ca)
+        # Index 6 is is_ca
+        assert feature_vec_ca[6] == 1
+        
+        # Test non-CA atoms
+        for atom_name in ['N', 'C', 'O', 'CB']:
+            atom_info = {
+                'atom_name': atom_name,
+                'residue_name': 'ALA',
+                'residue_id': '1',
+                'chain': 'A',
+                'element': 'C'
+            }
+            feature_vec = atom_info_to_feature_vector(atom_info)
+            assert feature_vec[6] == 0, f"{atom_name} should not be marked as CA"
+    
+    def test_residue_id_parsing(self):
+        """Test residue_id is correctly parsed."""
+        atom_info = {
+            'atom_name': 'CA',
+            'residue_name': 'ALA',
+            'residue_id': '42',
+            'chain': 'A',
+            'element': 'C'
+        }
+        feature_vec = atom_info_to_feature_vector(atom_info)
+        
+        # Index 4 is residue_id
+        assert feature_vec[4] == 42
+    
+    def test_unknown_values_fallback_to_misc(self):
+        """Test that unknown values map to 'misc' index."""
+        atom_info = {
+            'atom_name': 'UNKNOWN_ATOM',
+            'residue_name': 'UNK',
+            'residue_id': '1',
+            'chain': 'Z',
+            'element': 'XX'
+        }
+        feature_vec = atom_info_to_feature_vector(atom_info)
+        
+        # Should map to last index (misc) for unknown values
+        assert feature_vec[0] == len(PROTEIN_ATOM_FEATURES['atom_names']) - 1  # misc
+        assert feature_vec[1] == len(PROTEIN_ATOM_FEATURES['residue_names']) - 1  # misc
+        assert feature_vec[2] == len(PROTEIN_ATOM_FEATURES['elements']) - 1  # misc
+
+
+class TestAtomInfoListToFeatures:
+    """Tests for atom_info_list_to_features function."""
+    
+    def test_empty_list(self):
+        """Test handling of empty list."""
+        features = atom_info_list_to_features([])
+        
+        assert isinstance(features, np.ndarray)
+        assert len(features) == 0
+    
+    def test_single_atom_conversion(self):
+        """Test conversion of single atom."""
+        atom_info_list = [{
+            'atom_name': 'CA',
+            'residue_name': 'ALA',
+            'residue_id': '1',
+            'chain': 'A',
+            'element': 'C'
+        }]
+        
+        features = atom_info_list_to_features(atom_info_list)
+        
+        assert features.shape == (1, 7)
+        assert features.dtype == np.int64
+    
+    def test_multiple_atoms_conversion(self):
+        """Test conversion of multiple atoms."""
+        atom_info_list = [
+            {'atom_name': 'N', 'residue_name': 'MET', 'residue_id': '1', 'chain': 'A', 'element': 'N'},
+            {'atom_name': 'CA', 'residue_name': 'MET', 'residue_id': '1', 'chain': 'A', 'element': 'C'},
+            {'atom_name': 'C', 'residue_name': 'MET', 'residue_id': '1', 'chain': 'A', 'element': 'C'},
+            {'atom_name': 'O', 'residue_name': 'MET', 'residue_id': '1', 'chain': 'A', 'element': 'O'},
+        ]
+        
+        features = atom_info_list_to_features(atom_info_list)
+        
+        assert features.shape == (4, 7)
+        assert features.dtype == np.int64
+        # All backbone atoms should have is_backbone = 1
+        assert np.all(features[:, 5] == 1)
+        # Only second atom (CA) should have is_ca = 1
+        assert features[1, 6] == 1
+        assert np.sum(features[:, 6]) == 1
+    
+    def test_conversion_default(self):
+        """Test conversion (default)."""
+        atom_info_list = [
+            {'atom_name': 'CA', 'residue_name': 'ALA', 'residue_id': '1', 'chain': 'A', 'element': 'C'},
+        ]
+        
+        features = atom_info_list_to_features(atom_info_list)
+        
+        assert features.shape == (1, 7)
+        assert features.dtype == np.int64
+    
+    def test_real_file_conversion(self, test_cif_file):
+        """Test conversion with real CIF file data."""
+        atom_info, coords, props, _ = parse_cif_atoms(test_cif_file)
+        
+        features = atom_info_list_to_features(atom_info)
+        assert features.shape == (len(atom_info), 7)
+        assert features.dtype == np.int64
+
+
+class TestGetAtomFeatureDims:
+    """Tests for get_atom_feature_dims function."""
+    
+    def test_dims(self):
+        """Test feature dimensions."""
+        dims = get_atom_feature_dims()
+        
+        assert isinstance(dims, list)
+        assert len(dims) == 7
+        
+        # First 4 should be categorical (positive integers)
+        assert dims[0] == len(PROTEIN_ATOM_FEATURES['atom_names'])
+        assert dims[1] == len(PROTEIN_ATOM_FEATURES['residue_names'])
+        assert dims[2] == len(PROTEIN_ATOM_FEATURES['elements'])
+        assert dims[3] == len(PROTEIN_ATOM_FEATURES['chains'])
+        
+        # residue_id is continuous (-1)
+        assert dims[4] == -1
+        
+        # is_backbone and is_ca are binary (2)
+        assert dims[5] == 2
+        assert dims[6] == 2
+    
+    def test_dims_match_feature_lengths(self):
+        """Test that categorical dimensions match actual feature list lengths."""
+        dims = get_atom_feature_dims()
+        
+        assert dims[0] == len(PROTEIN_ATOM_FEATURES['atom_names'])
+        assert dims[1] == len(PROTEIN_ATOM_FEATURES['residue_names'])
+        assert dims[2] == len(PROTEIN_ATOM_FEATURES['elements'])
+        assert dims[3] == len(PROTEIN_ATOM_FEATURES['chains'])
+
+
+class TestFeatureIntegration:
+    """Integration tests for feature conversion with real CIF data."""
+    
+    def test_ca_only_features(self, test_cif_file):
+        """Test feature extraction for CA atoms only."""
+        ca_info, ca_coords, ca_props, _ = get_ca_atoms(test_cif_file)
+        features = atom_info_list_to_features(ca_info)
+        
+        # All should be CA atoms
+        assert np.all(features[:, 6] == 1)  # is_ca flag
+        # All should be backbone atoms
+        assert np.all(features[:, 5] == 1)  # is_backbone flag
+    
+    def test_backbone_features(self, test_cif_file):
+        """Test feature extraction for backbone atoms."""
+        bb_info, bb_coords, bb_props, _ = get_backbone_atoms(test_cif_file)
+        features = atom_info_list_to_features(bb_info)
+        
+        # All should be backbone atoms
+        assert np.all(features[:, 5] == 1)  # is_backbone flag
+        
+        # Count CA atoms
+        num_ca = np.sum(features[:, 6])
+        assert num_ca > 0
+        assert num_ca < len(features)  # CA is subset of backbone
+    
+    def test_full_protein_features(self, small_cif_file):
+        """Test feature extraction for full protein."""
+        atom_info, coords, props, _ = parse_cif_atoms(small_cif_file)
+        features = atom_info_list_to_features(atom_info)
+        
+        # Check shape
+        assert features.shape[0] == len(atom_info)
+        assert features.shape[1] == 7
+        assert features.dtype == np.int64
+        
+        # Check that some atoms are backbone and some are not
+        num_backbone = np.sum(features[:, 5])
+        assert 0 < num_backbone < len(features)
+        
+        # Check that CA atoms exist
+        num_ca = np.sum(features[:, 6])
+        assert num_ca > 0
+    
+    def test_feature_and_coordinate_alignment(self, test_cif_file):
+        """Test that features and coordinates are properly aligned."""
+        atom_info, coords, props, _ = parse_cif_atoms(test_cif_file)
+        features = atom_info_list_to_features(atom_info)
+        coords_array = coordinates_to_array(coords)
+        
+        # Should have same number of atoms
+        assert features.shape[0] == coords_array.shape[0]
+        assert features.shape[0] == len(atom_info)
+    
+    def test_residue_id_ordering(self, small_cif_file):
+        """Test that residue IDs are generally increasing."""
+        atom_info, _, _, _ = parse_cif_atoms(small_cif_file)
+        features = atom_info_list_to_features(atom_info)
+        
+        residue_ids = features[:, 4]
+        
+        # Residue IDs should start from a positive number
+        assert np.min(residue_ids) >= 0
+        
+        # Should have multiple residues
+        unique_residues = len(np.unique(residue_ids))
+        assert unique_residues > 1

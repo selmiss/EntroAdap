@@ -25,8 +25,8 @@ import transformers
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
-from src.configs import ScriptArguments, SFTConfig, MultiModalConfig
-from src.data_loader import MultiModalDataCollator, preprocess_multimodal_dataset
+from ..configs import ScriptArguments, SFTConfig, MultiModalConfig
+from ..data_loader import MultiModalDataCollator, preprocess_multimodal_dataset
 from utils import get_dataset, get_model, get_tokenizer
 from utils.model_utils import get_custom_model
 from utils.callbacks import get_callbacks

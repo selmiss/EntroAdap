@@ -1,4 +1,5 @@
 datasets
+torch
 transformers
 trl
 deepspeed
@@ -7,9 +8,14 @@ peft
 numpy
 openai
 tqdm
+scipy
 
+# Entity structure
+torch_geometric
+rdkit
 # For protein structure extraction
 gemmi
+biopython
 
 
 

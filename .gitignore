@@ -1,5 +1,6 @@
 # Environment variables
 /local.env.sh
+/env.sh
 /data
 /checkpoints
 

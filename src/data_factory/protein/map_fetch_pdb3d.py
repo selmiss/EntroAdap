@@ -3,6 +3,81 @@ import os
 from pathlib import Path
 from urllib.request import urlretrieve
 from urllib.error import HTTPError
+from typing import List, Tuple, Optional
+from io import StringIO
+
+
+def blast_search_pdb(protein_sequence: str, 
+                      e_value_threshold: float = 0.001,
+                      max_hits: int = 10) -> List[Tuple[str, float, float]]:
+    """
+    Search for similar protein sequences in PDB database using BLAST.
+    
+    Args:
+        protein_sequence: Amino acid sequence (single letter code)
+        e_value_threshold: E-value threshold for filtering results (default: 0.001)
+        max_hits: Maximum number of hits to return (default: 10)
+        
+    Returns:
+        List of tuples: [(pdb_id, e_value, identity_percentage), ...]
+        Sorted by e-value (best matches first)
+        
+    Example:
+        >>> results = blast_search_pdb("MKFLKFSLLTAVLLSVVFAFSSCGDDDDTYPYDVPDYAIE")
+        >>> for pdb_id, e_val, identity in results[:5]:
+        ...     print(f"{pdb_id}: E={e_val:.2e}, Identity={identity:.1f}%")
+    """
+    try:
+        from Bio.Blast import NCBIWWW, NCBIXML
+    except ImportError:
+        raise ImportError("Biopython required. Install: pip install biopython")
+    
+    if not protein_sequence or not protein_sequence.replace(' ', '').isalpha():
+        raise ValueError("Invalid protein sequence")
+    
+    print(f"Running BLAST search (length={len(protein_sequence)})...")
+    
+    # Run BLAST against PDB database
+    result_handle = NCBIWWW.qblast(
+        program="blastp",
+        database="pdb",
+        sequence=protein_sequence,
+        expect=e_value_threshold,
+        hitlist_size=max_hits
+    )
+    
+    # Parse results
+    blast_records = NCBIXML.parse(result_handle)
+    results = []
+    
+    for blast_record in blast_records:
+        for alignment in blast_record.alignments:
+            for hsp in alignment.hsps:
+                if hsp.expect <= e_value_threshold:
+                    # Extract PDB ID from title (format: "pdb|1ABC|A")
+                    title = alignment.title
+                    pdb_id = None
+                    if '|' in title:
+                        parts = title.split('|')
+                        if len(parts) >= 2:
+                            pdb_id = parts[1][:4].upper()  # First 4 chars
+                    
+                    if pdb_id:
+                        identity_pct = (hsp.identities / hsp.align_length) * 100
+                        results.append((pdb_id, hsp.expect, identity_pct))
+    
+    # Remove duplicates and sort by e-value
+    unique_results = {}
+    for pdb_id, e_val, identity in results:
+        if pdb_id not in unique_results or e_val < unique_results[pdb_id][0]:
+            unique_results[pdb_id] = (e_val, identity)
+    
+    final_results = [(pdb_id, e_val, identity) 
+                     for pdb_id, (e_val, identity) in unique_results.items()]
+    final_results.sort(key=lambda x: x[1])  # Sort by e-value
+    
+    print(f"Found {len(final_results)} unique PDB matches")
+    return final_results[:max_hits]
 
 
 def extract_pdb_ids(mapping_file_path: str):
