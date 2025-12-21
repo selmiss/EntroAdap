@@ -9,6 +9,7 @@ numpy
 openai
 tqdm
 scipy
+wandb
 
 # Entity structure
 torch_geometric
@@ -16,6 +17,9 @@ rdkit
 # For protein structure extraction
 gemmi
 biopython
+
+# For data serialization
+pyarrow
 
 
 

@@ -12,6 +12,7 @@ from src.data_factory.protein.cif_to_cooridinates import (
     atom_info_to_feature_vector,
     atom_info_list_to_features,
     get_atom_feature_dims,
+    get_atomic_number,
     PROTEIN_ATOM_FEATURES
 )
 
@@ -400,6 +401,42 @@ class TestProteinAtomFeatures:
             assert elem in elements
 
 
+class TestGetAtomicNumber:
+    """Tests for get_atomic_number function."""
+    
+    def test_common_protein_elements(self):
+        """Test atomic numbers for common protein elements."""
+        assert get_atomic_number('H') == 1
+        assert get_atomic_number('C') == 6
+        assert get_atomic_number('N') == 7
+        assert get_atomic_number('O') == 8
+        assert get_atomic_number('S') == 16
+        assert get_atomic_number('P') == 15
+    
+    def test_less_common_elements(self):
+        """Test atomic numbers for less common elements."""
+        assert get_atomic_number('Se') == 34  # Selenium
+        assert get_atomic_number('Br') == 35  # Bromine
+        assert get_atomic_number('I') == 53   # Iodine
+        assert get_atomic_number('F') == 9    # Fluorine
+        assert get_atomic_number('Cl') == 17  # Chlorine
+    
+    def test_unknown_element(self):
+        """Test that unknown elements return 0."""
+        assert get_atomic_number('XX') == 0
+        assert get_atomic_number('misc') == 0
+        assert get_atomic_number('UNKNOWN') == 0
+        assert get_atomic_number('') == 0
+    
+    def test_case_sensitivity(self):
+        """Test that element symbols are case-sensitive."""
+        assert get_atomic_number('C') == 6
+        assert get_atomic_number('Ca') == 20  # Calcium
+        assert get_atomic_number('Cl') == 17  # Chlorine
+        # Lowercase 'c' won't match 'C', should return 0
+        assert get_atomic_number('c') == 0
+
+
 class TestAtomInfoToFeatureVector:
     """Tests for atom_info_to_feature_vector function."""
     
@@ -418,6 +455,9 @@ class TestAtomInfoToFeatureVector:
         # Should return 7 features
         assert len(feature_vec) == 7
         assert all(isinstance(f, int) for f in feature_vec)
+        
+        # Check atomic number for Carbon
+        assert feature_vec[0] == 6  # C has atomic number 6
     
     def test_backbone_flag_for_backbone_atoms(self):
         """Test is_backbone flag is set correctly for backbone atoms."""
@@ -494,20 +534,22 @@ class TestAtomInfoToFeatureVector:
         assert feature_vec[4] == 42
     
     def test_unknown_values_fallback_to_misc(self):
-        """Test that unknown values map to 'misc' index."""
+        """Test that unknown values map to 'misc' index or 0 for elements."""
         atom_info = {
             'atom_name': 'UNKNOWN_ATOM',
             'residue_name': 'UNK',
             'residue_id': '1',
-            'chain': 'Z',
+            'chain': 'AA',  # Invalid chain (not A-Z), should map to misc
             'element': 'XX'
         }
         feature_vec = atom_info_to_feature_vector(atom_info)
         
-        # Should map to last index (misc) for unknown values
-        assert feature_vec[0] == len(PROTEIN_ATOM_FEATURES['atom_names']) - 1  # misc
-        assert feature_vec[1] == len(PROTEIN_ATOM_FEATURES['residue_names']) - 1  # misc
-        assert feature_vec[2] == len(PROTEIN_ATOM_FEATURES['elements']) - 1  # misc
+        # Unknown element should return atomic number 0
+        assert feature_vec[0] == 0  # Unknown element
+        # Other unknown values should map to last index (misc)
+        assert feature_vec[1] == len(PROTEIN_ATOM_FEATURES['atom_names']) - 1  # misc atom name
+        assert feature_vec[2] == len(PROTEIN_ATOM_FEATURES['residue_names']) - 1  # misc residue name
+        assert feature_vec[3] == len(PROTEIN_ATOM_FEATURES['chains']) - 1  # misc chain
 
 
 class TestAtomInfoListToFeatures:
@@ -584,10 +626,12 @@ class TestGetAtomFeatureDims:
         assert isinstance(dims, list)
         assert len(dims) == 7
         
-        # First 4 should be categorical (positive integers)
-        assert dims[0] == len(PROTEIN_ATOM_FEATURES['atom_names'])
-        assert dims[1] == len(PROTEIN_ATOM_FEATURES['residue_names'])
-        assert dims[2] == len(PROTEIN_ATOM_FEATURES['elements'])
+        # Index 0: atomic number is categorical (119: 0-118)
+        assert dims[0] == 119
+        
+        # Indices 1-3 should be categorical (positive integers)
+        assert dims[1] == len(PROTEIN_ATOM_FEATURES['atom_names'])
+        assert dims[2] == len(PROTEIN_ATOM_FEATURES['residue_names'])
         assert dims[3] == len(PROTEIN_ATOM_FEATURES['chains'])
         
         # residue_id is continuous (-1)
@@ -601,9 +645,9 @@ class TestGetAtomFeatureDims:
         """Test that categorical dimensions match actual feature list lengths."""
         dims = get_atom_feature_dims()
         
-        assert dims[0] == len(PROTEIN_ATOM_FEATURES['atom_names'])
-        assert dims[1] == len(PROTEIN_ATOM_FEATURES['residue_names'])
-        assert dims[2] == len(PROTEIN_ATOM_FEATURES['elements'])
+        assert dims[0] == 119  # atomic number range
+        assert dims[1] == len(PROTEIN_ATOM_FEATURES['atom_names'])
+        assert dims[2] == len(PROTEIN_ATOM_FEATURES['residue_names'])
         assert dims[3] == len(PROTEIN_ATOM_FEATURES['chains'])
 
 
@@ -619,6 +663,8 @@ class TestFeatureIntegration:
         assert np.all(features[:, 6] == 1)  # is_ca flag
         # All should be backbone atoms
         assert np.all(features[:, 5] == 1)  # is_backbone flag
+        # All CA atoms should have Carbon (atomic number 6)
+        assert np.all(features[:, 0] == 6)  # atomic number for C
     
     def test_backbone_features(self, test_cif_file):
         """Test feature extraction for backbone atoms."""
@@ -632,6 +678,13 @@ class TestFeatureIntegration:
         num_ca = np.sum(features[:, 6])
         assert num_ca > 0
         assert num_ca < len(features)  # CA is subset of backbone
+        
+        # Check that we have various atomic numbers (C, N, O)
+        atomic_numbers = np.unique(features[:, 0])
+        # Backbone should have at least C(6), N(7), O(8)
+        assert 6 in atomic_numbers  # Carbon
+        assert 7 in atomic_numbers  # Nitrogen
+        assert 8 in atomic_numbers  # Oxygen
     
     def test_full_protein_features(self, small_cif_file):
         """Test feature extraction for full protein."""
@@ -650,6 +703,14 @@ class TestFeatureIntegration:
         # Check that CA atoms exist
         num_ca = np.sum(features[:, 6])
         assert num_ca > 0
+        
+        # Check that atomic numbers are in valid range (0-118)
+        atomic_numbers = features[:, 0]
+        assert np.all(atomic_numbers >= 0)
+        assert np.all(atomic_numbers <= 118)
+        # Should have common protein elements
+        unique_atomic_nums = np.unique(atomic_numbers)
+        assert 6 in unique_atomic_nums  # Carbon should be present
     
     def test_feature_and_coordinate_alignment(self, test_cif_file):
         """Test that features and coordinates are properly aligned."""
@@ -674,3 +735,16 @@ class TestFeatureIntegration:
         # Should have multiple residues
         unique_residues = len(np.unique(residue_ids))
         assert unique_residues > 1
+    
+    def test_element_to_atomic_number_consistency(self, small_cif_file):
+        """Test that element strings are correctly converted to atomic numbers."""
+        atom_info, _, _, _ = parse_cif_atoms(small_cif_file)
+        features = atom_info_list_to_features(atom_info)
+        
+        # Check specific atoms
+        for i, atom in enumerate(atom_info):
+            element = atom['element']
+            expected_atomic_num = get_atomic_number(element)
+            actual_atomic_num = features[i, 0]
+            assert actual_atomic_num == expected_atomic_num, \
+                f"Atom {i} with element {element}: expected {expected_atomic_num}, got {actual_atomic_num}"

@@ -33,7 +33,7 @@ class FeatureEmbedder(nn.Module):
     """
     Unified feature embedder using offset-based embedding for categorical features.
     
-    Protein node features (7): [atom_name(46), residue(24), element(12), chain(27), residue_id(cont), is_backbone(2), is_ca(2)]
+    Protein node features (7): [atomic_number(119), atom_name(46), residue(24), chain(27), residue_id(cont), is_backbone(2), is_ca(2)]
     Molecule node features (9): [atomic_num(119), chirality(4), degree(12), charge(12), numH(10), radical(6), hybrid(6), aromatic(2), ring(2)]
     Protein edges: distance (float)
     Molecule chem edges (3): [bond_type(5), bond_stereo(6), conjugated(2)]
@@ -51,10 +51,11 @@ class FeatureEmbedder(nn.Module):
         self.hidden_dim = hidden_dim
         self.protein_residue_id_scale = float(protein_residue_id_scale)
         
-        # Protein node: 7 features with dims [46, 24, 12, 27, -1, 2, 2]
+        # Protein node: 7 features with dims [119, 46, 24, 27, -1, 2, 2]
         # IMPORTANT: keep these in sync with src/data_factory/protein/cif_to_cooridinates.py (PROTEIN_ATOM_FEATURES).
+        # Features: [atomic_number(119: 0-118), atom_name(46), residue(24), chain(27), residue_id(cont), is_backbone(2), is_ca(2)]
         # If the residue vocab is wrong, offset-based embedding will collide across fields.
-        protein_dims = [46, 24, 12, 27, 2, 2]  # Skip continuous residue_id
+        protein_dims = [119, 46, 24, 27, 2, 2]  # Skip continuous residue_id (index 4)
         protein_offset = torch.tensor([0] + protein_dims[:-1]).cumsum(0)
         self.register_buffer('protein_node_offset', protein_offset)
         self.protein_node_embed = nn.Embedding(sum(protein_dims), hidden_dim)
@@ -117,15 +118,22 @@ class FeatureEmbedder(nn.Module):
             Standardized graph dict with keys: node_emb, edge_emb, edge_index, pos
         """
         # Embed node features [N, 7]
+        # Feature order: [atomic_number, atom_name, residue_name, chain, residue_id, is_backbone, is_ca]
         node_feat = data['node_feat']
-        cat_feats = node_feat[:, [0, 1, 2, 3, 5, 6]].long()  # Skip residue_id at index 4
+        
+        # Extract categorical features (indices 0, 1, 2, 3, 5, 6) - now including atomic_number
+        cat_feats = node_feat[:, [0, 1, 2, 3, 5, 6]].long()
+        
+        # Extract continuous feature (residue_id at index 4)
         residue_id = node_feat[:, 4:5].float()
         if self.protein_residue_id_scale > 0:
             residue_id = residue_id / self.protein_residue_id_scale
         
-        # Offset-based embedding
+        # Offset-based embedding for all categorical features including atomic_number
         offset_feats = cat_feats + self.protein_node_offset.unsqueeze(0)
         embeddings = self.protein_node_embed(offset_feats)  # [N, 6, hidden]
+        
+        # Project continuous feature
         residue_emb = self.protein_residue_proj(residue_id)  # [N, hidden]
         
         # Concatenate and combine

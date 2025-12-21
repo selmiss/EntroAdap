@@ -1,9 +1,11 @@
 # Environment variables
-/local.env.sh
+/local_env.sh
 /env.sh
 /data
 /checkpoints
-
+/env_my.sh
+/docs
+/wandb
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

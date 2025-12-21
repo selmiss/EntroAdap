@@ -1,0 +1,89 @@
+# Masked Reconstruction Pre-training Configuration with DeepSpeed
+
+# Model configuration
+model:
+  hidden_dim: 512
+  num_layers: 12
+  dropout: 0.1
+  update_coords: true
+  use_layernorm: true
+  num_rbf: 32
+  rbf_max: 10.0
+  
+  # Reconstruction head parameters
+  num_elements: 119
+  num_dist_bins: 64
+  dist_min: 0.0
+  dist_max: 20.0
+  
+  # Loss weights
+  element_weight: 1.0
+  dist_weight: 1.0
+  noise_weight: 1.0
+
+# Data configuration
+data:
+  train_data_path: ./data/protein_train.parquet
+  val_data_path: ./data/protein_val.parquet
+  cache_dir: null
+  
+  # Masking parameters
+  node_mask_prob: 0.15
+  noise_std: 0.1
+  use_soft_dist_targets: false
+  soft_dist_sigma: 0.5
+
+# Training configuration
+training:
+  output_dir: ./checkpoints/masked_reconstruction_ds
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 16
+  learning_rate: 5.0e-5
+  num_train_epochs: 20
+  warmup_steps: 2000
+  
+  # Logging and saving
+  logging_steps: 50
+  save_steps: 2000
+  eval_steps: 2000
+  evaluation_strategy: steps
+  save_strategy: steps
+  load_best_model_at_end: true
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  save_total_limit: 3
+  
+  # Optimization
+  fp16: false
+  bf16: true
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-8
+  
+  # Data loading
+  dataloader_num_workers: 8
+  dataloader_pin_memory: true
+  
+  # Logging and reporting
+  report_to: [wandb]
+  run_name: null  # Will be auto-generated if null
+  logging_dir: null  # Will use output_dir/logs if null
+  
+  # DeepSpeed
+  deepspeed: configs/deepspeed/ds_config_zero2.json
+  
+  # Misc
+  seed: 42
+  disable_tqdm: false
+  remove_unused_columns: false
+
+# Wandb configuration
+wandb:
+  project: EntroAdap-MaskedReconstruction
+  entity: null  # Set to your wandb entity/team name
+  tags: [masked_reconstruction, pretraining, graph_encoder, deepspeed]
+  notes: Masked reconstruction pre-training with DeepSpeed ZeRO-2
+

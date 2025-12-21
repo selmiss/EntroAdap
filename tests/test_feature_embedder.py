@@ -15,11 +15,12 @@ class TestFeatureEmbedder:
     
     def test_embed_protein_graph(self, embedder):
         """Test embedding complete protein graph."""
+        # New format: [atomic_number, atom_name, residue_name, chain, residue_id, is_backbone, is_ca]
         graph_data = {
             'node_feat': torch.tensor([
-                [0, 0, 1, 0, 10, 1, 0],
-                [1, 0, 1, 0, 10, 1, 1],
-                [2, 0, 1, 0, 10, 1, 0],
+                [6, 0, 1, 0, 10, 1, 0],   # Carbon, first atom name, second residue, first chain, residue 10, backbone, not CA
+                [7, 1, 1, 0, 10, 1, 1],   # Nitrogen, second atom name, second residue, first chain, residue 10, backbone, is CA
+                [8, 2, 1, 0, 10, 1, 0],   # Oxygen, third atom name, second residue, first chain, residue 10, backbone, not CA
             ], dtype=torch.long),
             'edge_attr': torch.tensor([[1.5], [2.0]], dtype=torch.float32),
             'edge_index': torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
@@ -109,6 +110,7 @@ class TestFeatureEmbedder:
         embedder = FeatureEmbedder(hidden_dim=128)
         
         # Protein graph with valid ranges
+        # New format: [atomic_number, atom_name, residue_name, chain, residue_id, is_backbone, is_ca]
         N_protein, E_protein = 100, 200
         protein_data = {
             'node_feat': torch.zeros((N_protein, 7), dtype=torch.long),
@@ -116,13 +118,13 @@ class TestFeatureEmbedder:
             'edge_index': torch.randint(0, N_protein, (2, E_protein)),
             'pos': torch.randn(N_protein, 3),
         }
-        protein_data['node_feat'][:, 0] = torch.randint(0, 46, (N_protein,))
-        protein_data['node_feat'][:, 1] = torch.randint(0, 24, (N_protein,))
-        protein_data['node_feat'][:, 2] = torch.randint(0, 12, (N_protein,))
-        protein_data['node_feat'][:, 3] = torch.randint(0, 27, (N_protein,))
+        protein_data['node_feat'][:, 0] = torch.randint(1, 119, (N_protein,))  # atomic_number (1-118)
+        protein_data['node_feat'][:, 1] = torch.randint(0, 46, (N_protein,))  # atom_name
+        protein_data['node_feat'][:, 2] = torch.randint(0, 24, (N_protein,))  # residue_name
+        protein_data['node_feat'][:, 3] = torch.randint(0, 27, (N_protein,))  # chain
         protein_data['node_feat'][:, 4] = torch.arange(N_protein)  # residue_id
-        protein_data['node_feat'][:, 5] = torch.randint(0, 2, (N_protein,))
-        protein_data['node_feat'][:, 6] = torch.randint(0, 2, (N_protein,))
+        protein_data['node_feat'][:, 5] = torch.randint(0, 2, (N_protein,))  # is_backbone
+        protein_data['node_feat'][:, 6] = torch.randint(0, 2, (N_protein,))  # is_ca
         
         result = embedder.embed_protein_graph(protein_data)
         assert result['node_emb'].shape == (N_protein, 128)
@@ -178,13 +180,14 @@ class TestFeatureEmbedder:
     
     def test_forward_protein_modality(self, embedder):
         """Test forward method with protein modality."""
+        # New format: [atomic_number, atom_name, residue_name, chain, residue_id, is_backbone, is_ca]
         data = {
             'modality': 'protein',
             'value': {
                 'node_feat': torch.tensor([
-                    [0, 0, 1, 0, 10, 1, 0],
-                    [1, 0, 1, 0, 10, 1, 1],
-                    [2, 0, 1, 0, 10, 1, 0],
+                    [6, 0, 1, 0, 10, 1, 0],   # Carbon
+                    [7, 1, 1, 0, 10, 1, 1],   # Nitrogen
+                    [8, 2, 1, 0, 10, 1, 0],   # Oxygen
                 ], dtype=torch.long),
                 'edge_attr': torch.tensor([[1.5], [2.0]], dtype=torch.float32),
                 'edge_index': torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
