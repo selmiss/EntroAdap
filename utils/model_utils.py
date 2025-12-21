@@ -5,6 +5,12 @@ from trl import ModelConfig, get_kbit_device_map, get_quantization_config, get_p
 
 from src.configs import GRPOConfig, SFTConfig, MultiModalConfig
 from src.models import MultiModalLLM
+from src.models.multimodal_llm_config import (
+    MultiModalLLMConfig,
+    EncoderConfig,
+    PatchingConfig,
+    FusionConfig,
+)
 
 
 def get_tokenizer(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) -> PreTrainedTokenizer:
@@ -99,17 +105,30 @@ def get_custom_model(
         if peft_config is not None:
             llm_model = get_peft_model(llm_model, peft_config)
     
-    # Create the multi-modal wrapper with the (possibly PEFT-wrapped) LLM
-    multimodal_model = MultiModalLLM(
-        llm_model=llm_model,
-        modality_vocab_size=multimodal_config.modality_vocab_size,
-        modality_embedding_dim=multimodal_config.modality_embedding_dim,
-        num_fusion_blocks=multimodal_config.num_fusion_blocks,
-        num_attention_heads=multimodal_config.num_attention_heads,
-        fusion_hidden_dim=multimodal_config.fusion_hidden_dim,
-        fusion_intermediate_dim=multimodal_config.fusion_intermediate_dim,
-        dropout=multimodal_config.dropout,
+    # Build the config for the current graph-based MultiModalLLM.
+    #
+    # NOTE: MultiModalConfig historically described a different (token/embedding-based) multimodal model.
+    # We map the overlapping "fusion" knobs onto MultiModalLLMConfig for backward compatibility so that
+    # the training script can still configure the number of fusion blocks / heads / dims.
+    enc_hidden = (
+        multimodal_config.fusion_hidden_dim
+        if multimodal_config.fusion_hidden_dim is not None
+        else multimodal_config.modality_embedding_dim
     )
+    mm_config = MultiModalLLMConfig(
+        encoder=EncoderConfig(hidden_dim=int(enc_hidden)),
+        patching=PatchingConfig(),  # use defaults; patching-specific knobs are not exposed in MultiModalConfig
+        fusion=FusionConfig(
+            num_blocks=int(multimodal_config.num_fusion_blocks),
+            num_heads=int(multimodal_config.num_attention_heads),
+            hidden_dim=multimodal_config.fusion_hidden_dim,
+            intermediate_dim=multimodal_config.fusion_intermediate_dim,
+            dropout=float(multimodal_config.dropout),
+        ),
+    )
+
+    # Create the multi-modal wrapper with the (possibly PEFT-wrapped) LLM
+    multimodal_model = MultiModalLLM(llm_model=llm_model, config=mm_config)
     
     # Ensure multimodal components are trainable (especially important when PEFT is used)
     multimodal_model.enable_multimodal_training()

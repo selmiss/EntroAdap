@@ -13,6 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .multimodal_collator import MultiModalDataCollator, preprocess_multimodal_dataset
+"""
+Data loader exports.
 
-__all__ = ["MultiModalDataCollator", "preprocess_multimodal_dataset"]
+Runner scripts import these from `src.data_loader`, so we re-export here.
+"""
+
+from .graph_dataset import GraphDataset, GraphBatchCollator
+from .multimodal_collator import MultiModalDataCollator, preprocess_multimodal_dataset
+from .multimodal_sft_dataset import MultiModalSFTDataset, preprocess_multimodal_sft_dataset
+
+__all__ = [
+    "GraphDataset",
+    "GraphBatchCollator",
+    "MultiModalDataCollator",
+    "preprocess_multimodal_dataset",
+    "MultiModalSFTDataset",
+    "preprocess_multimodal_sft_dataset",
+]

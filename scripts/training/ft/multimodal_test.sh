@@ -11,5 +11,6 @@ export MASTER_PORT=29500
 # Load configuration from YAML file
 CONFIG_FILE="configs/sft/multimodal_test/multimodal_test_tiny.yaml"
 
-deepspeed --include localhost:${GPU_IDS} --master_port ${MASTER_PORT} src/trainer/sft.py \
+deepspeed --include localhost:${GPU_IDS} --master_port ${MASTER_PORT} src/runner/sft.py \
     --config ${CONFIG_FILE}
+

@@ -3,15 +3,13 @@
 model_name_or_path: Qwen/Qwen2-0.5B  # Small but realistic Qwen2 model (~1GB)
 
 # Dataset configuration
-dataset_name: data/mock_train.jsonl
-
-# Tokenizer configuration
-eos_token: '<|endoftext|>'  # Qwen2 uses this token
+dataset_name: data/encoder/test/molecule_sft_sample.parquet
 
 # Training hyperparameters
 learning_rate: 5.0e-4
 num_train_epochs: 1  # Quick test - just 1 epoch
-max_length: 256  # Moderate length for testing
+# For SFTTrainer/transformers.TrainingArguments, use dataset_text_field + the trainer's own sequence handling
+# TRL's SFTConfig doesn't have top-level max_seq_length; we'll set it in the runner logic
 per_device_train_batch_size: 2
 
 # Optimization settings

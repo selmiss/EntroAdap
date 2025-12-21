@@ -25,8 +25,8 @@ import transformers
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
-from ..configs import ScriptArguments, SFTConfig, MultiModalConfig
-from ..data_loader import MultiModalDataCollator, preprocess_multimodal_dataset
+from src.configs import ScriptArguments, SFTConfig, MultiModalConfig
+from src.data_loader import MultiModalDataCollator, preprocess_multimodal_dataset
 from utils import get_dataset, get_model, get_tokenizer
 from utils.model_utils import get_custom_model
 from utils.callbacks import get_callbacks
@@ -121,15 +121,16 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     if multimodal_args is not None and multimodal_args.use_custom_model:
         
         logger.info("Using custom MultiModalDataCollator for multimodal training")
+        # Default to 256 for multimodal (common short-context molecule tasks)
+        max_seq_length = 256
         data_collator = MultiModalDataCollator(
             tokenizer=tokenizer,
             padding=True,
+            max_length=max_seq_length,
             return_tensors="pt",
-            include_modality_tokens=True,
         )
         
         # Preprocess dataset: tokenize messages and create labels
-        max_seq_length = training_args.max_seq_length if hasattr(training_args, 'max_seq_length') else 1024
         dataset = preprocess_multimodal_dataset(
             dataset=dataset,
             tokenizer=tokenizer,

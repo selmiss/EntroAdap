@@ -107,6 +107,7 @@ class GeoEncoder(nn.Module):
             Dictionary with keys:
                 - node_emb: [N, hidden_dim] final node embeddings
                 - pos: [N, 3] updated coordinates (if update_coords=True)
+                - edge_emb: [E, hidden_dim] edge embeddings from embedder
         """
         # Embed graph (modality-specific)
         embedded = self.embedder(data)
@@ -123,4 +124,6 @@ class GeoEncoder(nn.Module):
         return {
             'node_emb': node_emb,
             'pos': pos_out,
+            'edge_emb': embedded['edge_emb'],
+            'edge_index': embedded['edge_index'],
         }
