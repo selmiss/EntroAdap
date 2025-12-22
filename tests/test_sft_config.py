@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict
 
 from src.configs import ScriptArguments, SFTConfig
-from src.trainer.sft import expand_env_vars
+from utils.env_utils import expand_env_vars
 
 
 class TestSFTConfig:

@@ -12,6 +12,12 @@ from .multimodal_llm_config import MultiModalLLMConfig, BaseConfig
 
 class MultiModalLLM(PreTrainedModel):
     """Multi-modal LLM integrating graph encoder, instruction-conditioned patching, and cross-attention fusion."""
+
+    # This custom wrapper architecture does not implement SDPA/FlashAttention kernels.
+    # Tell Transformers to fall back to eager attention to avoid init-time errors.
+    _supports_sdpa = False
+    _supports_flash_attn_2 = False
+    _supports_flex_attn = False
     
     def __init__(
         self,
@@ -42,6 +48,12 @@ class MultiModalLLM(PreTrainedModel):
             # Legacy: Override specific params
             model = MultiModalLLM(llm_model=llm, config=BaseConfig(), k_max=48)
         """
+        # Ensure the wrapper itself doesn't try to opt into SDPA/FlashAttention.
+        try:
+            llm_model.config._attn_implementation_internal = "eager"
+        except Exception:
+            pass
+
         super().__init__(llm_model.config)
         
         self.llm_model = llm_model
@@ -102,6 +114,52 @@ class MultiModalLLM(PreTrainedModel):
         # 6. Output projection to LLM space
         self.output_proj = nn.Linear(fusion_hidden, self.llm_hidden_dim)
         self.output_norm = nn.LayerNorm(self.llm_hidden_dim)
+
+    # ---------------------------------------------------------------------
+    # HuggingFace PreTrainedModel embedding / resizing delegation
+    #
+    # This wrapper stores the real language model in `self.llm_model`. Many
+    # library utilities (tokenizer special-token handling, trainer utilities,
+    # etc.) call these methods on the *outer* model. We delegate them to the
+    # inner LLM so both standard LLM and wrapped mLLM behave consistently.
+    # ---------------------------------------------------------------------
+
+    def get_input_embeddings(self):
+        return self.llm_model.get_input_embeddings()
+
+    def set_input_embeddings(self, value):
+        return self.llm_model.set_input_embeddings(value)
+
+    def get_output_embeddings(self):
+        if hasattr(self.llm_model, "get_output_embeddings"):
+            return self.llm_model.get_output_embeddings()
+        return None
+
+    def set_output_embeddings(self, new_embeddings):
+        if hasattr(self.llm_model, "set_output_embeddings"):
+            return self.llm_model.set_output_embeddings(new_embeddings)
+        return None
+
+    def resize_token_embeddings(
+        self,
+        new_num_tokens: int | None = None,
+        pad_to_multiple_of: int | None = None,
+        mean_resizing: bool = True,
+    ):
+        """
+        Resize the inner LLM token embeddings, and keep this wrapper's config in sync.
+        """
+        out = self.llm_model.resize_token_embeddings(
+            new_num_tokens=new_num_tokens,
+            pad_to_multiple_of=pad_to_multiple_of,
+            mean_resizing=mean_resizing,
+        )
+        # Keep outer config aligned with the underlying LLM config
+        try:
+            self.config.vocab_size = self.llm_model.config.vocab_size
+        except Exception:
+            pass
+        return out
         
     def get_llm_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Get embeddings from LLM embedding layer."""
@@ -232,6 +290,106 @@ class MultiModalLLM(PreTrainedModel):
         
         return fused
     
+    def _inject_patches_into_sequence(
+        self,
+        inputs_embeds: torch.Tensor,
+        patches: torch.Tensor,
+        patch_positions: torch.Tensor,
+        patch_mask: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Insert patches into the embedding sequence at specified positions.
+        
+        This function INSERTS patches (not replaces), shifting subsequent tokens to the right.
+        All related tensors (attention_mask, labels) are adjusted accordingly.
+        
+        Args:
+            inputs_embeds: [B, seq_len, hidden_dim] input embeddings
+            patches: [B, k_max, hidden_dim] patch embeddings to inject
+            patch_positions: [B, 1] position where to insert patches (single position per sample)
+            patch_mask: [B, k_max] valid patch mask
+            attention_mask: [B, seq_len] attention mask (optional)
+            labels: [B, seq_len] labels (optional)
+        
+        Returns:
+            (new_inputs_embeds, new_attention_mask, new_labels)
+            - new_inputs_embeds: [B, seq_len + k_max, hidden_dim]
+            - new_attention_mask: [B, seq_len + k_max] (if provided)
+            - new_labels: [B, seq_len + k_max] (if provided)
+        """
+        B, seq_len, hidden_dim = inputs_embeds.shape
+        k_max = patches.shape[1]
+        device = inputs_embeds.device
+        
+        # Process each sample in the batch
+        new_embeds_list = []
+        new_attn_list = [] if attention_mask is not None else None
+        new_labels_list = [] if labels is not None else None
+        
+        for b in range(B):
+            pos = patch_positions[b, 0].item()
+            
+            if pos < 0:
+                # No injection for this sample, just keep original + pad at end
+                new_embeds_list.append(inputs_embeds[b])
+                # Pad with zeros at the end to match new length
+                pad_embeds = torch.zeros(k_max, hidden_dim, device=device)
+                new_embeds_list[b] = torch.cat([new_embeds_list[b], pad_embeds], dim=0)
+                
+                if attention_mask is not None:
+                    new_attn_list.append(torch.cat([
+                        attention_mask[b],
+                        torch.zeros(k_max, dtype=attention_mask.dtype, device=device)
+                    ], dim=0))
+                
+                if labels is not None:
+                    new_labels_list.append(torch.cat([
+                        labels[b],
+                        torch.full((k_max,), -100, dtype=labels.dtype, device=device)
+                    ], dim=0))
+            else:
+                # Insert patches at position pos
+                pos = min(pos, seq_len)  # Clamp to valid range
+                
+                # Split: [0:pos] + patches + [pos:]
+                before = inputs_embeds[b, :pos]
+                after = inputs_embeds[b, pos:]
+                
+                # Get valid patches for this sample
+                valid_patches = patches[b]  # [k_max, hidden_dim]
+                if patch_mask is not None:
+                    # Zero out invalid patches
+                    mask_expanded = patch_mask[b].unsqueeze(-1).float()  # [k_max, 1]
+                    valid_patches = valid_patches * mask_expanded
+                
+                new_embeds_list.append(torch.cat([before, valid_patches, after], dim=0))
+                
+                if attention_mask is not None:
+                    before_attn = attention_mask[b, :pos]
+                    after_attn = attention_mask[b, pos:]
+                    # Patches get attention mask based on patch_mask
+                    if patch_mask is not None:
+                        patch_attn = patch_mask[b].to(attention_mask.dtype)
+                    else:
+                        patch_attn = torch.ones(k_max, dtype=attention_mask.dtype, device=device)
+                    new_attn_list.append(torch.cat([before_attn, patch_attn, after_attn], dim=0))
+                
+                if labels is not None:
+                    before_labels = labels[b, :pos]
+                    after_labels = labels[b, pos:]
+                    # Patches get -100 (ignore in loss)
+                    patch_labels = torch.full((k_max,), -100, dtype=labels.dtype, device=device)
+                    new_labels_list.append(torch.cat([before_labels, patch_labels, after_labels], dim=0))
+        
+        # Stack all samples
+        new_inputs_embeds = torch.stack(new_embeds_list, dim=0)  # [B, seq_len + k_max, hidden_dim]
+        new_attention_mask = torch.stack(new_attn_list, dim=0) if new_attn_list is not None else None
+        new_labels = torch.stack(new_labels_list, dim=0) if new_labels_list is not None else None
+        
+        return new_inputs_embeds, new_attention_mask, new_labels
+    
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -254,7 +412,7 @@ class MultiModalLLM(PreTrainedModel):
             graph_data: {'modality': str, 'value': {...}} graph input
             batch: [N] node-to-graph assignment
             instr_positions: [B, n_instr] token positions that contain instructions
-            patch_positions: [B, k_max] token positions to inject patches (optional)
+            patch_positions: [B, 1] single position where patches should be inserted
             attention_mask: [B, seq_len] attention mask
             patch_mask: [B, k_max] valid patch mask (optional)
             node_mask: [N] valid node mask (optional)
@@ -306,15 +464,17 @@ class MultiModalLLM(PreTrainedModel):
             
             # Inject patches into text sequence
             if patch_positions is not None:
-                # Replace embeddings at specified positions
-                k_max = self.config_mm.patching.k_max
-                for g in range(min(G, B)):
-                    for k in range(k_max):
-                        pos = patch_positions[g, k]
-                        if pos >= 0 and pos < seq_len and (effective_patch_mask is None or effective_patch_mask[g, k]):
-                            inputs_embeds[g, pos] = fused_patches[g, k]
+                # Insert patches at specified positions (new behavior: INSERT, not replace)
+                inputs_embeds, attention_mask, labels = self._inject_patches_into_sequence(
+                    inputs_embeds=inputs_embeds[:G],  # Only process samples with graphs
+                    patches=fused_patches,
+                    patch_positions=patch_positions,
+                    patch_mask=effective_patch_mask,
+                    attention_mask=attention_mask[:G] if attention_mask is not None else None,
+                    labels=labels[:G] if labels is not None else None,
+                )
             else:
-                # Concatenate at beginning
+                # Fallback: Concatenate at beginning (old behavior for backward compatibility)
                 inputs_embeds = torch.cat([fused_patches[:B], inputs_embeds], dim=1)
                 
                 # Adjust masks and labels
@@ -385,14 +545,19 @@ class MultiModalLLM(PreTrainedModel):
 
             fused_patches = self.fuse_patches_with_nodes(patch_emb, node_emb, effective_patch_mask, node_mask, batch)
             
-            k_max = self.config_mm.patching.k_max
             if patch_positions is not None:
-                for g in range(min(G, B)):
-                    for k in range(k_max):
-                        pos = patch_positions[g, k]
-                        if pos >= 0 and pos < seq_len and (effective_patch_mask is None or effective_patch_mask[g, k]):
-                            inputs_embeds[g, pos] = fused_patches[g, k]
+                # Insert patches at specified positions (new behavior: INSERT, not replace)
+                inputs_embeds, attention_mask, _ = self._inject_patches_into_sequence(
+                    inputs_embeds=inputs_embeds[:G],
+                    patches=fused_patches,
+                    patch_positions=patch_positions,
+                    patch_mask=effective_patch_mask,
+                    attention_mask=attention_mask[:G] if attention_mask is not None else None,
+                    labels=None,  # No labels during generation
+                )
             else:
+                # Fallback: Concatenate at beginning
+                k_max = self.config_mm.patching.k_max
                 inputs_embeds = torch.cat([fused_patches[:B], inputs_embeds], dim=1)
                 if attention_mask is not None:
                     patch_attn_mask = torch.ones((B, k_max), dtype=attention_mask.dtype, device=attention_mask.device)

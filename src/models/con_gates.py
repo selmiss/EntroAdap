@@ -214,7 +214,7 @@ def soft_patch_grow(
         # Remap edges to local indices
         src = global_to_local[src_all[e_ids]]  # [E_g]
         dst = global_to_local[dst_all[e_ids]]  # [E_g]
-        w = edge_w[e_ids]                      # [E_g]
+        w = edge_w[e_ids].to(dtype=x.dtype)    # [E_g] - ensure dtype matches x
 
         # Normalize expansion weights per-source so each node distributes to neighbors stably.
         # If a node has no outgoing edges, it simply does not send.

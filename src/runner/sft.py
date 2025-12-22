@@ -1,17 +1,3 @@
-# Copyright 2025 The HuggingFace Team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
 Supervised fine-tuning script for decoder language models.
 """
@@ -27,25 +13,16 @@ from transformers.trainer_utils import get_last_checkpoint
 
 from src.configs import ScriptArguments, SFTConfig, MultiModalConfig
 from src.data_loader import MultiModalDataCollator, preprocess_multimodal_dataset
-from utils import get_dataset, get_model, get_tokenizer
-from utils.model_utils import get_custom_model
+from src.runner.multimodal_sft_trainer import MultiModalSFTTrainer
+from utils import get_dataset, get_tokenizer
+from utils.env_utils import expand_env_vars
+from utils.model_utils import get_model_and_peft_config
 from utils.callbacks import get_callbacks
 from utils.wandb_logging import init_wandb_training
-from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config
+from trl import ModelConfig, SFTTrainer, TrlParser
 
 
 logger = logging.getLogger(__name__)
-
-
-def expand_env_vars(script_args, training_args):
-    """Expand environment variables in paths (e.g., ${CHECKPOINT_DIR}, ${DATA_DIR})."""
-    training_args.output_dir = os.path.expandvars(training_args.output_dir)
-    if script_args.dataset_name:
-        script_args.dataset_name = os.path.expandvars(script_args.dataset_name)
-    if script_args.dataset_mixture:
-        script_args.dataset_mixture = {
-            os.path.expandvars(k): v for k, v in script_args.dataset_mixture.items()
-        }
 
 
 def main(script_args, training_args, model_args, multimodal_args=None):
@@ -88,17 +65,8 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     dataset = get_dataset(script_args)
     tokenizer = get_tokenizer(model_args, training_args)
     
-    # Load model (custom multimodal or standard LLM)
-    if multimodal_args is not None and multimodal_args.use_custom_model:
-        logger.info("Loading custom multi-modal model...")
-        model = get_custom_model(model_args, training_args, multimodal_args)
-        # For custom models, PEFT and liger_kernel are already applied inside get_custom_model to the inner LLM
-        peft_config = None
-    else:
-        logger.info("Loading standard LLM model...")
-        model = get_model(model_args, training_args)
-        # For standard models, let the trainer handle PEFT
-        peft_config = get_peft_config(model_args)
+    # Load model + PEFT config (standard LLM vs custom multimodal)
+    model, peft_config = get_model_and_peft_config(model_args, training_args, multimodal_args)
 
     if tokenizer.chat_template is None:
         logger.info("No chat template provided, defaulting to ChatML.")
@@ -110,35 +78,45 @@ def main(script_args, training_args, model_args, multimodal_args=None):
             tokenizer.add_special_tokens({"eos_token": "<|im_end|>"})
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+    
+    # Add multimodal special token for graph/structure injection
+    if multimodal_args is not None and multimodal_args.use_custom_model:
+        structure_token = "<STRUCTURE>"
+        if structure_token not in tokenizer.get_vocab():
+            logger.info(f"Adding special token: {structure_token}")
+            tokenizer.add_special_tokens({"additional_special_tokens": [structure_token]})
+        
         # Resize model embeddings if new tokens were added
-        model.resize_token_embeddings(len(tokenizer))
+        # NOTE: For the custom multimodal wrapper, resize the *inner* LLM embeddings.
+        inner_llm = getattr(model, "llm_model", None)
+        (inner_llm or model).resize_token_embeddings(len(tokenizer))
 
     ############################
     # Initialize the SFT Trainer
     ############################
     # Use custom data collator for multimodal training
     data_collator = None
-    if multimodal_args is not None and multimodal_args.use_custom_model:
-        
-        logger.info("Using custom MultiModalDataCollator for multimodal training")
-        # Default to 256 for multimodal (common short-context molecule tasks)
-        max_seq_length = 256
+    use_multimodal = multimodal_args is not None and multimodal_args.use_custom_model
+    
+    if use_multimodal:
+        logger.info("Using custom MultiModalDataCollator and MultiModalSFTTrainer for multimodal training")
+
         data_collator = MultiModalDataCollator(
             tokenizer=tokenizer,
             padding=True,
-            max_length=max_seq_length,
+            max_length=multimodal_args.max_seq_length,
             return_tensors="pt",
         )
-        
-        # Preprocess dataset: tokenize messages and create labels
         dataset = preprocess_multimodal_dataset(
             dataset=dataset,
             tokenizer=tokenizer,
             split=script_args.dataset_train_split,
-            max_seq_length=max_seq_length,
+            max_seq_length=multimodal_args.max_seq_length,
         )
     
-    trainer = SFTTrainer(
+    # Use custom trainer for multimodal, standard for text-only
+    trainer_class = MultiModalSFTTrainer if use_multimodal else SFTTrainer
+    trainer = trainer_class(
         model=model,
         args=training_args,
         train_dataset=dataset[script_args.dataset_train_split],
@@ -205,15 +183,13 @@ def main(script_args, training_args, model_args, multimodal_args=None):
 
 
 if __name__ == "__main__":
-    # Try to parse with MultiModalConfig, fall back to without if not needed
-    try:
-        parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig, MultiModalConfig))
-        script_args, training_args, model_args, multimodal_args = parser.parse_args_and_config()
-        expand_env_vars(script_args, training_args)
-        main(script_args, training_args, model_args, multimodal_args)
-    except (ValueError, TypeError):
-        # If MultiModalConfig is not in the config, use standard parsing
-        parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
-        script_args, training_args, model_args = parser.parse_args_and_config()
-        expand_env_vars(script_args, training_args)
-        main(script_args, training_args, model_args, multimodal_args=None)
+    # Always parse with MultiModalConfig; treat it as "enabled" only when use_custom_model=True.
+    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig, MultiModalConfig))
+    script_args, training_args, model_args, multimodal_args = parser.parse_args_and_config()
+
+    # Keep downstream behavior consistent: only pass multimodal_args when actually used.
+    if not getattr(multimodal_args, "use_custom_model", False):
+        multimodal_args = None
+
+    expand_env_vars(script_args, training_args, model_args, multimodal_args)
+    main(script_args, training_args, model_args, multimodal_args)

@@ -28,7 +28,7 @@ class MultiModalConfig:
         use_custom_model (`bool`, *optional*, defaults to `False`):
             Whether to use the custom multi-modal model instead of standard LLM.
         modality_vocab_size (`int`, *optional*, defaults to 10000):
-            Vocabulary size for modality tokens.
+            Size of the modality vocabulary (kept for backward compatibility; may be unused by some models).
         modality_embedding_dim (`int`, *optional*, defaults to 768):
             Dimension of modality embeddings.
         num_fusion_blocks (`int`, *optional*, defaults to 4):
@@ -49,7 +49,9 @@ class MultiModalConfig:
     )
     modality_vocab_size: int = field(
         default=10000,
-        metadata={"help": "Vocabulary size for modality tokens."}
+        metadata={
+            "help": "Size of the modality vocabulary (backward compatible; may be unused by some models)."
+        },
     )
     modality_embedding_dim: int = field(
         default=768,
@@ -74,6 +76,10 @@ class MultiModalConfig:
     dropout: float = field(
         default=0.1,
         metadata={"help": "Dropout rate for fusion blocks."}
+    )
+    max_seq_length: int = field(
+        default=256,
+        metadata={"help": "Maximum sequence length for multimodal training."}
     )
 
 

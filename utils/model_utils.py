@@ -134,3 +134,26 @@ def get_custom_model(
     multimodal_model.enable_multimodal_training()
     
     return multimodal_model
+
+
+def get_model_and_peft_config(
+    model_args: ModelConfig,
+    training_args: SFTConfig | GRPOConfig,
+    multimodal_args: MultiModalConfig | None = None,
+):
+    """
+    Create the correct model (standard LLM vs custom multimodal) and return the PEFT config
+    expected by TRL's trainers.
+
+    - For **custom multimodal models**, LoRA/PEFT is applied inside `get_custom_model()` to the
+      inner LLM only, so we must return `peft_config=None` to avoid double-wrapping by the trainer.
+    - For **standard LLMs**, we return `peft_config=get_peft_config(model_args)` so the trainer
+      applies PEFT in the standard TRL way.
+    """
+    if multimodal_args is not None and getattr(multimodal_args, "use_custom_model", False):
+        model = get_custom_model(model_args, training_args, multimodal_args)
+        peft_config = None
+    else:
+        model = get_model(model_args, training_args)
+        peft_config = get_peft_config(model_args)
+    return model, peft_config

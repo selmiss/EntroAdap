@@ -301,62 +301,72 @@ def preprocess_multimodal_sft_dataset(
     This function:
     1. Applies chat template to messages
     2. Tokenizes text
-    3. Identifies instruction positions (user messages)
-    4. Preserves graph_data for collator
+    3. Finds structure token position for patch injection (supports custom tokens)
+    4. Computes instruction positions (full prompt: system + user messages before first assistant)
+    5. Preserves graph_data for collator
     
     Args:
         dataset: MultiModalSFTDataset or HF Dataset
-        tokenizer: Tokenizer with chat template
+        tokenizer: Tokenizer with chat template (must have structure token registered)
         split: Split name (unused, for compatibility)
         max_seq_length: Maximum sequence length
     
     Returns:
-        Processed dataset with tokenized inputs
+        Processed dataset with tokenized inputs, labels, patch_position, and instr_len
     """
     def _preprocess_example(example):
         """Process a single example."""
         messages = example['messages']
         structure_token = example.get('structure_token', '<STRUCTURE>')
         
-        # Apply chat template
+        # Apply chat template to get formatted text
         text = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=False,
         )
         
-        # Tokenize
+        # Tokenize full text
         tokenized = tokenizer(
             text,
             truncation=True,
             max_length=max_seq_length,
-            padding=False,  # Padding handled by collator
+            padding=False,
         )
         
         # Create labels (copy of input_ids for causal LM)
         tokenized['labels'] = tokenized['input_ids'][:]
         
-        # Find instruction positions (user message tokens)
-        # Simple heuristic: find user message content in tokenized sequence
-        instr_positions = []
-        for msg in messages:
-            if msg['role'] == 'user':
-                # Tokenize just the user content to find its positions
-                user_text = msg['content']
-                user_tokens = tokenizer.encode(user_text, add_special_tokens=False)
-                
-                # Find where these tokens appear in the full sequence
-                # (Simple substring matching - more robust methods possible)
-                input_ids = tokenized['input_ids']
-                for i in range(len(input_ids) - len(user_tokens) + 1):
-                    if input_ids[i:i+len(user_tokens)] == user_tokens:
-                        # Found user message, store some positions
-                        # Take first few tokens as instruction representation
-                        instr_positions.extend(list(range(i, min(i+10, len(input_ids)))))
-                        break
+        # Find <STRUCTURE> token position for patch injection
+        structure_token_id = tokenizer.convert_tokens_to_ids(structure_token)
+        patch_pos = -1
+        if structure_token_id is not None and structure_token_id in tokenized['input_ids']:
+            patch_pos = tokenized['input_ids'].index(structure_token_id)
+        tokenized['patch_position'] = patch_pos
         
-        # Store instruction positions (will be padded by collator)
-        tokenized['instr_positions'] = instr_positions if instr_positions else [0]
+        # Instruction positions: keep a prefix length (system + user turns, up to first assistant)
+        # This is robust and avoids brittle substring/offset mapping logic.
+        first_assistant_idx = None
+        for i, msg in enumerate(messages):
+            if isinstance(msg, dict) and msg.get('role') == 'assistant':
+                first_assistant_idx = i
+                break
+        prompt_messages = messages if first_assistant_idx is None else messages[:first_assistant_idx]
+        add_generation_prompt = first_assistant_idx is not None
+        prompt_text = tokenizer.apply_chat_template(
+            prompt_messages,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+        )
+        prompt_tok = tokenizer(
+            prompt_text,
+            truncation=True,
+            max_length=max_seq_length,
+            padding=False,
+        )
+        instr_len = min(len(prompt_tok['input_ids']), len(tokenized['input_ids']))
+        # Store instruction *length*; collator can expand this into positions efficiently.
+        tokenized['instr_len'] = int(instr_len)
         
         # Preserve graph data if present
         if 'graph_data' in example:

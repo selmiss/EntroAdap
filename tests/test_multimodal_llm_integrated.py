@@ -237,8 +237,8 @@ class TestMultiModalLLMIntegrated:
         expected_len = seq_len + k_max
         assert outputs.logits.shape == (B, expected_len, 1000)
     
-    def test_forward_with_graph_position_mode(self, multimodal_model):
-        """Test forward with graph and position-based injection."""
+    def test_forward_with_graph_position_mode_old_api(self, multimodal_model):
+        """Test forward with graph and position-based injection (OLD API - deprecated)."""
         B, seq_len = 2, 20
         N, E = 20, 40
         
@@ -257,11 +257,38 @@ class TestMultiModalLLMIntegrated:
         batch = torch.cat([torch.zeros(10, dtype=torch.long), torch.ones(10, dtype=torch.long)])
         instr_positions = torch.tensor([[0, 1, -1], [0, 1, 2]], dtype=torch.long)
         
-        # Inject patches at specific positions
+        # OLD API: Inject patches at specific positions (replaced k_max positions)
+        # This is deprecated in favor of new INSERT-based injection
         k_max = multimodal_model.config_mm.patching.k_max
         patch_positions = torch.full((B, k_max), -1, dtype=torch.long)
         patch_positions[0, :3] = torch.tensor([5, 6, 7])
         patch_positions[1, :3] = torch.tensor([10, 11, 12])
+        
+        # Note: This test uses old API format which is now handled differently
+        # Skip this test as the new API uses [B, 1] format
+    
+    def test_forward_with_graph_injection_new_api(self, multimodal_model):
+        """Test forward with graph and new INSERT-based injection."""
+        B, seq_len = 2, 20
+        N, E = 20, 40
+        
+        input_ids = torch.randint(0, 1000, (B, seq_len))
+        
+        graph_data = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': create_protein_features(N),
+                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_index': torch.randint(0, N, (2, E)),
+                'pos': torch.randn(N, 3),
+            }
+        }
+        
+        batch = torch.cat([torch.zeros(10, dtype=torch.long), torch.ones(10, dtype=torch.long)])
+        instr_positions = torch.tensor([[0, 1, -1], [0, 1, 2]], dtype=torch.long)
+        
+        # NEW API: Single injection position per sample [B, 1]
+        patch_positions = torch.tensor([[5], [10]], dtype=torch.long)
         
         outputs = multimodal_model(
             input_ids=input_ids,
@@ -271,8 +298,10 @@ class TestMultiModalLLMIntegrated:
             patch_positions=patch_positions,
         )
         
-        # No concatenation, same length
-        assert outputs.logits.shape == (B, seq_len, 1000)
+        # With INSERT, sequence length increases by k_max
+        k_max = multimodal_model.config_mm.patching.k_max
+        expected_len = seq_len + k_max
+        assert outputs.logits.shape == (B, expected_len, 1000)
     
     def test_forward_with_labels(self, multimodal_model):
         """Test forward with labels for training."""

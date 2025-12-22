@@ -25,6 +25,22 @@ def create_sample_jsonl(path: Path, num_samples: int = 5):
     # For testing, we'll use mock inline graph data
     samples = []
     for i in range(num_samples):
+        # Protein node features (7):
+        # [atomic_number(0-118), atom_name(0-45), residue(0-23), chain(0-26),
+        #  residue_id(continuous), is_backbone(0/1), is_ca(0/1)]
+        n = 10 + i
+        atomic_number = torch.randint(0, 119, (n, 1))
+        atom_name = torch.randint(0, 46, (n, 1))
+        residue = torch.randint(0, 24, (n, 1))
+        chain = torch.randint(0, 27, (n, 1))
+        residue_id = torch.arange(n, dtype=torch.float32).unsqueeze(1)  # continuous
+        is_backbone = torch.randint(0, 2, (n, 1))
+        is_ca = torch.randint(0, 2, (n, 1))
+        node_feat = torch.cat(
+            [atomic_number, atom_name, residue, chain, residue_id, is_backbone, is_ca],
+            dim=1,
+        )
+
         sample = {
             "messages": [
                 {"role": "system", "content": "You are a protein structure analyzer."},
@@ -37,10 +53,10 @@ def create_sample_jsonl(path: Path, num_samples: int = 5):
                 "value": {
                     "modality": "protein",
                     "value": {
-                        "node_feat": torch.randn(10+i, 7).tolist(),
-                        "pos": torch.randn(10+i, 3).tolist(),
-                        "edge_index": torch.randint(0, 10+i, (2, (10+i)*3)).tolist(),
-                        "edge_attr": torch.randn((10+i)*3, 1).tolist(),
+                        "node_feat": node_feat.tolist(),
+                        "pos": torch.randn(n, 3).tolist(),
+                        "edge_index": torch.randint(0, n, (2, n * 3)).tolist(),
+                        "edge_attr": torch.rand(n * 3, 1).tolist(),
                     }
                 }
             }
@@ -89,6 +105,8 @@ def test_preprocessing():
         # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
         tokenizer.pad_token = tokenizer.eos_token
+        # Add <STRUCTURE> token for patch injection
+        tokenizer.add_special_tokens({"additional_special_tokens": ["<STRUCTURE>"]})
         # Set chat template
         tokenizer.chat_template = "{% for message in messages %}{{message['role'] + ': ' + message['content'] + '\n'}}{% endfor %}"
         
@@ -105,10 +123,12 @@ def test_preprocessing():
         example = processed[0]
         assert 'input_ids' in example
         assert 'labels' in example
-        assert 'instr_positions' in example
+        assert 'instr_len' in example
         assert 'graph_data' in example
+        assert 'patch_position' in example
         
-        print(f"✓ Preprocessed example: input_ids len={len(example['input_ids'])}, instr_positions={example['instr_positions'][:5]}")
+        print(f"✓ Preprocessed example: input_ids len={len(example['input_ids'])}, instr_len={example['instr_len']}")
+        print(f"  patch_position: {example['patch_position']}")
 
 
 def test_collator():
@@ -123,6 +143,8 @@ def test_collator():
         
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
         tokenizer.pad_token = tokenizer.eos_token
+        # Add <STRUCTURE> token
+        tokenizer.add_special_tokens({"additional_special_tokens": ["<STRUCTURE>"]})
         # Set chat template
         tokenizer.chat_template = "{% for message in messages %}{{message['role'] + ': ' + message['content'] + '\n'}}{% endfor %}"
         
@@ -155,6 +177,11 @@ def test_collator():
         print(f"  batch tensor (node assignment): {batch['batch'].shape}")
         print(f"  instr_positions shape: {batch['instr_positions'].shape}")
         
+        # Check patch_positions if <STRUCTURE> token was used
+        if 'patch_positions' in batch:
+            print(f"  patch_positions shape: {batch['patch_positions'].shape}")
+            assert batch['patch_positions'].shape[0] == batch_size
+        
         # Verify node count matches batch tensor
         num_nodes = batch['graph_data']['value']['node_feat'].shape[0]
         num_graphs = batch['batch'].max().item() + 1
@@ -175,6 +202,8 @@ def test_model_forward():
         
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
         tokenizer.pad_token = tokenizer.eos_token
+        # Add <STRUCTURE> token
+        tokenizer.add_special_tokens({"additional_special_tokens": ["<STRUCTURE>"]})
         # Set chat template
         tokenizer.chat_template = "{% for message in messages %}{{message['role'] + ': ' + message['content'] + '\n'}}{% endfor %}"
         
@@ -193,7 +222,7 @@ def test_model_forward():
         llm_config.n_layer = 2
         llm_config.n_head = 2
         llm_config.n_embd = 128
-        llm_config.vocab_size = tokenizer.vocab_size
+        llm_config.vocab_size = len(tokenizer)  # Use actual vocab size after adding special tokens
         llm = AutoModelForCausalLM.from_config(llm_config, attn_implementation="eager")
         
         model = MultiModalLLM(llm_model=llm, config=SmallConfig())
@@ -201,16 +230,21 @@ def test_model_forward():
         
         print(f"✓ Model created")
         
-        # Forward pass
+        # Forward pass with patch_positions if available
+        forward_kwargs = {
+            'input_ids': batch['input_ids'],
+            'attention_mask': batch['attention_mask'],
+            'labels': batch['labels'],
+            'graph_data': batch['graph_data'],
+            'batch': batch['batch'],
+            'instr_positions': batch['instr_positions'],
+        }
+        if 'patch_positions' in batch:
+            forward_kwargs['patch_positions'] = batch['patch_positions']
+            print(f"  Using patch_positions: {batch['patch_positions'].tolist()}")
+        
         with torch.no_grad():
-            outputs = model(
-                input_ids=batch['input_ids'],
-                attention_mask=batch['attention_mask'],
-                labels=batch['labels'],
-                graph_data=batch['graph_data'],
-                batch=batch['batch'],
-                instr_positions=batch['instr_positions'],
-            )
+            outputs = model(**forward_kwargs)
         
         print(f"✓ Forward pass successful")
         print(f"  Loss: {outputs.loss.item():.4f}")
@@ -220,8 +254,9 @@ def test_model_forward():
         # Note: Sequence length increases by k_max patches
         k_max = model.config_mm.patching.k_max
         expected_seq_len = batch['input_ids'].shape[1] + k_max
-        assert outputs.logits.shape == (2, expected_seq_len, tokenizer.vocab_size)
+        assert outputs.logits.shape == (2, expected_seq_len, len(tokenizer))
         print(f"  Expected seq len (with patches): {expected_seq_len}")
+        print(f"  Actual seq len: {outputs.logits.shape[1]}")
 
 
 def main():

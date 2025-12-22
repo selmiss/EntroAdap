@@ -20,8 +20,8 @@ class MultiModalDataCollator:
     - input_ids, attention_mask, labels: [B, seq_len]
     - graph_data: {'modality': str, 'value': {node_feat, edge_index, pos, ...}}
     - batch: [N] node-to-graph assignment
-    - instr_positions: [B, max_instr_len] instruction token positions
-    - patch_positions: [B, k_max] optional patch injection positions (not used by default)
+    - instr_positions: [B, max_instr_len] token positions for full prompt (system + user messages)
+    - patch_positions: [B, 1] single position per sample where patches should be injected
     """
     
     tokenizer: PreTrainedTokenizerBase
@@ -167,14 +167,23 @@ class MultiModalDataCollator:
         return batched_graph, batch_tensor, graph_indices
     
     def _add_instr_positions(self, batch: Dict[str, Any], features: List[Dict[str, Any]]) -> None:
-        """Add padded instruction positions to batch."""
-        if not any('instr_positions' in f for f in features):
+        """Add padded instruction positions to batch.
+
+        Supports either:
+        - instr_positions: explicit list of token indices
+        - instr_len: integer prefix length (positions are generated as [0..instr_len-1])
+        """
+        if not any(('instr_positions' in f) or ('instr_len' in f) for f in features):
             return
         
         # Get instruction positions from each feature
         instr_pos_list = []
         for f in features:
-            pos = f.get('instr_positions', [0])
+            if 'instr_positions' in f:
+                pos = f.get('instr_positions', [-1])
+            else:
+                instr_len = int(f.get('instr_len', 0) or 0)
+                pos = list(range(min(instr_len, self.max_instr_positions))) if instr_len > 0 else [-1]
             # Truncate to max length
             pos = pos[:self.max_instr_positions]
             instr_pos_list.append(pos)
@@ -190,6 +199,23 @@ class MultiModalDataCollator:
         
         batch['instr_positions'] = torch.tensor(padded_positions, dtype=torch.long)
     
+    def _add_patch_positions(self, batch: Dict[str, Any], features: List[Dict[str, Any]]) -> None:
+        """Add patch positions to batch (single position per sample where graph patches should be injected).
+        
+        patch_position indicates the index where <STRUCTURE> token appears.
+        The model will INSERT k_max patches at this position (not replace).
+        """
+        if not any('patch_position' in f for f in features):
+            return
+        
+        # Get patch position from each feature (-1 if no graph data)
+        patch_pos_list = []
+        for f in features:
+            pos = f.get('patch_position', -1)
+            patch_pos_list.append(pos)
+        
+        batch['patch_positions'] = torch.tensor(patch_pos_list, dtype=torch.long).unsqueeze(-1)  # [B, 1]
+    
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Collate a batch of examples with text and graph structures.
@@ -201,6 +227,7 @@ class MultiModalDataCollator:
         - graph_data: {'modality': str, 'value': {...}} (if graphs present)
         - batch: [N] node-to-graph assignment (if graphs present)
         - instr_positions: [B, max_instr_len] (if present)
+        - patch_positions: [B, 1] single position where patches should be inserted (if present)
         """
         # Pad text features (input_ids, labels, attention_mask)
         batch = self._pad_text_features(features)
@@ -219,6 +246,9 @@ class MultiModalDataCollator:
         # Add instruction positions
         self._add_instr_positions(batch, features)
         
+        # Add patch positions
+        self._add_patch_positions(batch, features)
+        
         return batch
 
 
@@ -235,16 +265,18 @@ def preprocess_multimodal_dataset(
     1. Applies chat template to convert messages to text
     2. Tokenizes the text into input_ids
     3. Creates labels (copies of input_ids for causal LM training)
-    4. Preserves graph_data and instr_positions from dataset
+    4. Finds structure token positions for patch injection (supports custom tokens)
+    5. Computes instruction positions (full prompt: system + user messages before first assistant response)
+    6. Preserves graph_data and other fields from dataset
     
     Args:
         dataset: Dataset dictionary containing the data
-        tokenizer: Tokenizer to use for processing
+        tokenizer: Tokenizer to use for processing (must have structure token registered)
         split: Split name to process (e.g., "train")
         max_seq_length: Maximum sequence length for truncation
     
     Returns:
-        Processed dataset with tokenized inputs and labels
+        Processed dataset with tokenized inputs, labels, patch_position, and instr_len
     """
     def _preprocess_batch(examples):
         """Tokenize messages and prepare labels while preserving multimodal fields."""
@@ -263,7 +295,7 @@ def preprocess_multimodal_dataset(
             )
             texts.append(text)
         
-        # Tokenize
+        # Tokenize full texts
         tokenized = tokenizer(
             texts,
             truncation=True,
@@ -274,31 +306,52 @@ def preprocess_multimodal_dataset(
         # For causal LM, labels = input_ids (copy each list in the batch)
         tokenized["labels"] = [ids[:] for ids in tokenized["input_ids"]]
         
-        # Compute instruction positions (token positions for user messages) if not already present
+        # Find <STRUCTURE> token position for patch injection
+        # Support custom structure tokens per example (default: '<STRUCTURE>')
+        patch_position_batch: List[int] = []
+        for idx, input_ids in enumerate(tokenized["input_ids"]):
+            # Get structure token for this example (default to '<STRUCTURE>')
+            if 'structure_token' in examples:
+                structure_token = examples['structure_token'][idx] if isinstance(examples['structure_token'], list) else examples['structure_token']
+            else:
+                structure_token = '<STRUCTURE>'
+            
+            structure_token_id = tokenizer.convert_tokens_to_ids(structure_token)
+            
+            # Find first occurrence of structure token
+            patch_pos = -1
+            if structure_token_id is not None and structure_token_id in input_ids:
+                patch_pos = input_ids.index(structure_token_id)
+            patch_position_batch.append(patch_pos)
+        tokenized["patch_position"] = patch_position_batch
+        
+        # Compute instruction positions as a prefix length (system + user turns, up to first assistant).
+        # This is robust and avoids brittle substring/offset mapping logic.
         if "instr_positions" not in examples and "messages" in examples:
-            instr_positions_batch: List[List[int]] = []
-            for input_ids, messages in zip(tokenized["input_ids"], examples["messages"]):
-                positions: List[int] = []
-                try:
-                    for msg in messages:
-                        if isinstance(msg, dict) and msg.get("role") == "user":
-                            user_text = msg.get("content", "")
-                            if not user_text:
-                                continue
-                            user_tokens = tokenizer.encode(user_text, add_special_tokens=False)
-                            if not user_tokens:
-                                continue
-                            # find subsequence
-                            n = len(user_tokens)
-                            for i in range(len(input_ids) - n + 1):
-                                if input_ids[i : i + n] == user_tokens:
-                                    positions.extend(list(range(i, min(i + 10, len(input_ids)))))
-                                    break
-                except Exception:
-                    # be conservative: fall back to a sentinel position
-                    positions = []
-                instr_positions_batch.append(positions if positions else [0])
-            tokenized["instr_positions"] = instr_positions_batch
+            instr_len_batch: List[int] = []
+            for messages, full_ids in zip(examples["messages"], tokenized["input_ids"]):
+                first_assistant_idx = None
+                for i, msg in enumerate(messages):
+                    if isinstance(msg, dict) and msg.get("role") == "assistant":
+                        first_assistant_idx = i
+                        break
+                prompt_messages = messages if first_assistant_idx is None else messages[:first_assistant_idx]
+                add_generation_prompt = first_assistant_idx is not None
+                prompt_text = tokenizer.apply_chat_template(
+                    prompt_messages,
+                    tokenize=False,
+                    add_generation_prompt=add_generation_prompt,
+                )
+                prompt_tok = tokenizer(
+                    prompt_text,
+                    truncation=True,
+                    max_length=max_seq_length,
+                    padding=False,
+                )
+                instr_len = min(len(prompt_tok["input_ids"]), len(full_ids))
+                instr_len_batch.append(int(instr_len))
+            
+            tokenized["instr_len"] = instr_len_batch
         
         # Preserve graph_data if present
         if 'graph_data' in examples:
@@ -325,9 +378,13 @@ def preprocess_multimodal_dataset(
                 graph_data_list.append({"modality": examples["modality"][i], "value": value})
             tokenized["graph_data"] = graph_data_list
         
-        # Preserve instr_positions if present (overrides computed)
+        # Preserve instr_positions/instr_len if present (overrides computed)
         if 'instr_positions' in examples:
             tokenized['instr_positions'] = examples['instr_positions']
+        if 'instr_len' in examples:
+            tokenized['instr_len'] = examples['instr_len']
+        if 'patch_position' in examples:
+            tokenized['patch_position'] = examples['patch_position']
         
         return tokenized
     

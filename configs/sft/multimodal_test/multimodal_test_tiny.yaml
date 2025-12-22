@@ -7,13 +7,16 @@ dataset_name: data/encoder/test/molecule_sft_sample.parquet
 
 # Training hyperparameters
 learning_rate: 5.0e-4
-num_train_epochs: 1  # Quick test - just 1 epoch
+num_train_epochs: 10  # Quick test - just 1 epoch
 # For SFTTrainer/transformers.TrainingArguments, use dataset_text_field + the trainer's own sequence handling
 # TRL's SFTConfig doesn't have top-level max_seq_length; we'll set it in the runner logic
-per_device_train_batch_size: 2
+per_device_train_batch_size: 8
+
+# Logging level for the main process
+log_level: info        # one of: debug, info, warning, error, critical
 
 # Optimization settings
-gradient_checkpointing: true  # Enable for memory efficiency
+gradient_checkpointing: False  # Enable for memory efficiency
 bf16: true  # Use bf16 like production
 use_liger_kernel: false  # Test Liger integration
 
@@ -37,13 +40,14 @@ save_total_limit: 1
 # Training strategy
 eval_strategy: "no"
 report_to: []
+remove_unused_columns: false  # CRITICAL: Keep graph_data and multimodal columns
 
 # Multi-modal configuration - scaled for Qwen2-0.5B
 use_custom_model: true
-modality_vocab_size: 5000  # Reasonable size for testing
 modality_embedding_dim: 896  # Match Qwen2-0.5B hidden_size=896
 num_fusion_blocks: 2  # Fewer blocks for faster testing
 num_attention_heads: 14  # Match Qwen2-0.5B (it has 14 heads)
 fusion_hidden_dim: null  # defaults to modality_embedding_dim
 fusion_intermediate_dim: null  # defaults to 4 * fusion_hidden_dim
 dropout: 0.1
+max_seq_length: 256  # Maximum sequence (instruction) length for multimodal training

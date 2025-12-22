@@ -10,7 +10,7 @@ from transformers import AutoConfig
 from trl import ModelConfig
 
 from src.configs import SFTConfig, MultiModalConfig
-from utils.model_utils import get_custom_model
+from utils.model_utils import get_custom_model, get_model_and_peft_config
 from src.models import MultiModalLLM
 
 
@@ -100,6 +100,38 @@ class TestModelUtils:
         assert isinstance(model, MultiModalLLM)
         # Check that custom dimensions are respected
         assert model.fusion_blocks[0].ffn.fc1.out_features == 2048
+
+    @pytest.mark.unit
+    def test_get_model_and_peft_config_branching(self, monkeypatch, model_args, training_args):
+        """Unit test: branching/peft behavior without actually loading models."""
+        sentinel_model = object()
+        sentinel_peft = object()
+
+        def fake_get_model(_model_args, _training_args):
+            return sentinel_model
+
+        def fake_get_peft_config(_model_args):
+            return sentinel_peft
+
+        def fake_get_custom_model(_model_args, _training_args, _mm_args):
+            return sentinel_model
+
+        import utils.model_utils as mu
+
+        monkeypatch.setattr(mu, "get_model", fake_get_model)
+        monkeypatch.setattr(mu, "get_peft_config", fake_get_peft_config)
+        monkeypatch.setattr(mu, "get_custom_model", fake_get_custom_model)
+
+        # Standard path => returns peft_config
+        model, peft_config = get_model_and_peft_config(model_args, training_args, multimodal_args=None)
+        assert model is sentinel_model
+        assert peft_config is sentinel_peft
+
+        # Multimodal path => peft_config must be None (handled inside get_custom_model)
+        mm_args = MultiModalConfig(use_custom_model=True)
+        model, peft_config = get_model_and_peft_config(model_args, training_args, multimodal_args=mm_args)
+        assert model is sentinel_model
+        assert peft_config is None
 
 
 class TestMultiModalConfig:
