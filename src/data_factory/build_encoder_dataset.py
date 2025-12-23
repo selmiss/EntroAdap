@@ -2,7 +2,7 @@
 Build parquet dataset for EGNN masked reconstruction training.
 
 Processes molecules (SMILES) and proteins (PDB IDs) into a unified parquet format
-compatible with GraphDataset and MaskedReconstructionTrainer.
+compatible with GraphDataset and ReconstructionTrainer.
 """
 
 import os

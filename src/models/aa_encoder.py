@@ -1,33 +1,33 @@
 """
-Geometric Encoder
+All-Atom Encoder
 
-Combines FeatureEmbedder and EGNN Backbone into a unified encoder for processing
+Combines AAEmbedder and EGNN Backbone into a unified encoder for processing
 graphs with 3D coordinates.
 
 Key design features:
 - Modality-agnostic EGNN processing (no 'protein' or 'molecule' logic here)
-- All modality-specific handling is done in FeatureEmbedder
+- All modality-specific handling is done in AAEmbedder
 - All embeddings are mapped to consistent hidden_dim through linear projections
-- FeatureEmbedder handles edge concatenation for molecules internally
+- AAEmbedder handles edge concatenation for molecules internally
 """
 
 import torch
 import torch.nn as nn
 from typing import Dict, Tuple, Optional, Any
 
-from .components.feature_embedder import FeatureEmbedder
-from .components.egnn_backbone import EGNNBackbone
+from .components.aa_embedder import AAEmbedder
+from .components.egnn import EGNNBackbone
 
 
-class GeoEncoder(nn.Module):
+class AAEncoder(nn.Module):
     """
-    Geometric Encoder that combines feature embedding and EGNN processing.
+    All-Atom Encoder that combines feature embedding and EGNN processing.
     
     This encoder is modality-agnostic. It processes embedded graph data through EGNN layers.
-    All modality-specific logic (protein vs molecule) is handled by the FeatureEmbedder.
+    All modality-specific logic (protein vs molecule) is handled by the AAEmbedder.
     
     Processing pipeline:
-    1. FeatureEmbedder: Handles modality-specific features and edge concatenation
+    1. AAEmbedder: Handles modality-specific features and edge concatenation
     2. EGNN Backbone: Modality-agnostic graph neural network with coordinate updates
     
     Args:
@@ -58,7 +58,7 @@ class GeoEncoder(nn.Module):
         self.update_coords = update_coords
         
         # Feature embedder
-        self.embedder = FeatureEmbedder(
+        self.embedder = AAEmbedder(
             hidden_dim=hidden_dim,
             num_rbf=num_rbf,
             rbf_max=rbf_max,

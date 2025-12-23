@@ -11,9 +11,9 @@ import transformers
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
-from src.configs import ScriptArguments, SFTConfig, MultiModalConfig
+from src.models.training_configs import ScriptArguments, SFTConfig, OctopusConfig
 from src.data_loader import MultiModalDataCollator, preprocess_multimodal_dataset
-from src.runner.multimodal_sft_trainer import MultiModalSFTTrainer
+from src.trainer.octopus_trainer import MultiModalSFTTrainer
 from utils import get_dataset, get_tokenizer
 from utils.env_utils import expand_env_vars
 from utils.model_utils import get_model_and_peft_config
@@ -183,8 +183,8 @@ def main(script_args, training_args, model_args, multimodal_args=None):
 
 
 if __name__ == "__main__":
-    # Always parse with MultiModalConfig; treat it as "enabled" only when use_custom_model=True.
-    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig, MultiModalConfig))
+    # Always parse with OctopusConfig; treat it as "enabled" only when use_custom_model=True.
+    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig, OctopusConfig))
     script_args, training_args, model_args, multimodal_args = parser.parse_args_and_config()
 
     # Keep downstream behavior consistent: only pass multimodal_args when actually used.

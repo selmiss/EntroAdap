@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # coding=utf-8
 """
-Unit test that MultiModalLLM delegates resize_token_embeddings() to its LLM backbone.
+Unit test that Octopus delegates resize_token_embeddings() to its LLM backbone.
 """
 
 import pytest
 
 from transformers import GPT2Config, GPT2LMHeadModel
 
-from src.models.multimodal_llm import MultiModalLLM
-from src.models.multimodal_llm_config import BaseConfig
+from src.models.octopus import Octopus
+from src.models.octopus_config import BaseConfig
 
 
-class TestMultiModalLLMResizeEmbeddings:
+class TestOctopusResizeEmbeddings:
     @pytest.mark.unit
     def test_resize_token_embeddings_resizes_backbone(self):
         cfg = GPT2Config(
@@ -24,7 +24,7 @@ class TestMultiModalLLMResizeEmbeddings:
             n_head=1,
         )
         llm = GPT2LMHeadModel(cfg)
-        mm = MultiModalLLM(llm_model=llm, config=BaseConfig())
+        mm = Octopus(llm_model=llm, config=BaseConfig())
 
         mm.resize_token_embeddings(40)
 

@@ -2,16 +2,16 @@
 
 import pytest
 import torch
-from src.models.components.feature_embedder import FeatureEmbedder
+from src.models.components.aa_embedder import AAEmbedder
 
 
-class TestFeatureEmbedder:
+class TestAAEmbedder:
     """Test the unified feature embedder."""
     
     @pytest.fixture
     def embedder(self):
         """Create embedder for testing."""
-        return FeatureEmbedder(hidden_dim=256)
+        return AAEmbedder(hidden_dim=256)
     
     def test_embed_protein_graph(self, embedder):
         """Test embedding complete protein graph."""
@@ -107,7 +107,7 @@ class TestFeatureEmbedder:
     
     def test_batch_processing(self):
         """Test with larger batches."""
-        embedder = FeatureEmbedder(hidden_dim=128)
+        embedder = AAEmbedder(hidden_dim=128)
         
         # Protein graph with valid ranges
         # New format: [atomic_number, atom_name, residue_name, chain, residue_id, is_backbone, is_ca]
@@ -165,7 +165,7 @@ class TestFeatureEmbedder:
     def test_different_hidden_dims(self):
         """Test with different hidden dimensions."""
         for hidden_dim in [64, 128, 256, 512]:
-            embedder = FeatureEmbedder(hidden_dim=hidden_dim)
+            embedder = AAEmbedder(hidden_dim=hidden_dim)
             
             protein_data = {
                 'node_feat': torch.zeros((10, 7), dtype=torch.long),

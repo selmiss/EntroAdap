@@ -1,7 +1,7 @@
 """
 Masked Reconstruction Trainer for Graph Encoder
 
-Wraps GeoEncoder with prediction heads for:
+Wraps AAEncoder with prediction heads for:
 1. Node element ID reconstruction
 2. Edge distance bin classification (soft targets)
 3. Coordinate noise regression (MSE)
@@ -12,10 +12,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Optional, Tuple, Any
 
-from ..models.geo_encoder import GeoEncoder
+from ..models.aa_encoder import AAEncoder
 
 
-class MaskedReconstructionTrainer(nn.Module):
+class ReconstructionTrainer(nn.Module):
     """
     Trainer module for masked graph reconstruction.
     
@@ -25,7 +25,7 @@ class MaskedReconstructionTrainer(nn.Module):
     - Loss computation with proper normalization
     
     Args:
-        encoder: GeoEncoder instance
+        encoder: AAEncoder instance
         num_elements: Vocabulary size for element IDs (default: 119, 0-118)
         num_dist_bins: Number of bins for distance discretization
         dist_min: Minimum distance for binning
@@ -37,7 +37,7 @@ class MaskedReconstructionTrainer(nn.Module):
     
     def __init__(
         self,
-        encoder: GeoEncoder,
+        encoder: AAEncoder,
         num_elements: int = 119,
         num_dist_bins: int = 64,
         dist_min: float = 0.0,

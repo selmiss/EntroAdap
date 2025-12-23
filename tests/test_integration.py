@@ -9,8 +9,8 @@ import torch
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
 from trl import ModelConfig
 
-from src.configs import SFTConfig, MultiModalConfig
-from src.models import MultiModalLLM
+from src.models.training_configs import SFTConfig, OctopusConfig
+from src.models import Octopus
 from src.data_loader import MultiModalDataCollator
 from utils.model_utils import get_custom_model
 
@@ -40,7 +40,7 @@ class TestIntegration:
     def multimodal_model(self, small_config):
         """Create a small multimodal model for testing."""
         llm = AutoModelForCausalLM.from_config(small_config, attn_implementation="eager")
-        model = MultiModalLLM(
+        model = Octopus(
             llm_model=llm,
             modality_vocab_size=1000,
             modality_embedding_dim=256,
@@ -115,17 +115,11 @@ class TestIntegration:
         # Create input
         input_text = "What is"
         input_ids = tokenizer.encode(input_text, return_tensors="pt")
-        modality_dim = 256
-        text_dim = 256  # Should match small test model's hidden dim (256)
-        modality_embeddings = torch.randn(1, 8, modality_dim)
-        cross_attn_text_embeddings = torch.randn(1, 16, text_dim)
         
-        # Generate
+        # Test generation without graph data (text-only)
         with torch.no_grad():
             generated_ids = multimodal_model.generate(
                 input_ids=input_ids,
-                modality_embeddings=modality_embeddings,
-                kv_embeddings=cross_attn_text_embeddings,
                 max_length=input_ids.shape[1] + 20,
                 num_beams=1,
                 do_sample=False,
@@ -154,7 +148,7 @@ class TestIntegration:
             gradient_checkpointing=False,
         )
         
-        multimodal_args = MultiModalConfig(
+        multimodal_args = OctopusConfig(
             use_custom_model=True,
             modality_vocab_size=1000,
             modality_embedding_dim=256,
@@ -188,30 +182,49 @@ class TestIntegration:
     
     def test_batch_processing_different_lengths(self, multimodal_model, tokenizer):
         """Test processing batches with varying sequence lengths."""
-        # Create examples with different lengths
-        modality_dim = 256
-        text_dim = 256  # Should match small test model's hidden dim (256)
+        # Create examples with different lengths and graph data
+        graph_1 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.1] * 10 for _ in range(12)],  # 12 nodes
+                'pos': [[1.0, 2.0, 3.0] for _ in range(12)],
+                'edge_index': [[i, i+1] for i in range(11)],
+            }
+        }
+        graph_2 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.2] * 10 for _ in range(5)],  # 5 nodes
+                'pos': [[1.0, 1.0, 1.0] for _ in range(5)],
+                'edge_index': [[i, i+1] for i in range(4)],
+            }
+        }
+        graph_3 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.3] * 10 for _ in range(8)],  # 8 nodes
+                'pos': [[2.0, 2.0, 2.0] for _ in range(8)],
+                'edge_index': [[i, i+1] for i in range(7)],
+            }
+        }
         features = [
             {
                 "input_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 "attention_mask": [1] * 10,
                 "labels": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                "modality_embeddings": [[0.1] * modality_dim for _ in range(12)],
-                "kv_embeddings": [[0.2] * text_dim for _ in range(20)],
+                "graph_data": graph_1,
             },
             {
                 "input_ids": [11, 12, 13],
                 "attention_mask": [1] * 3,
                 "labels": [11, 12, 13],
-                "modality_embeddings": [[0.3] * modality_dim for _ in range(5)],
-                "kv_embeddings": [[0.4] * text_dim for _ in range(8)],
+                "graph_data": graph_2,
             },
             {
                 "input_ids": [14, 15, 16, 17, 18, 19, 20],
                 "attention_mask": [1] * 7,
                 "labels": [14, 15, 16, 17, 18, 19, 20],
-                "modality_embeddings": [[0.5] * modality_dim for _ in range(8)],
-                "kv_embeddings": [[0.6] * text_dim for _ in range(15)],
+                "graph_data": graph_3,
             },
         ]
         
@@ -226,13 +239,11 @@ class TestIntegration:
         # Check batch shapes
         batch_size = 3
         assert batch["input_ids"].shape[0] == batch_size
-        assert batch["modality_embeddings"].shape[0] == batch_size
-        assert batch["kv_embeddings"].shape[0] == batch_size
+        assert "graph_data" in batch
+        assert batch["graph_data"]["modality"] == "protein"
         
-        # All sequences should be padded to same length
+        # All text sequences should be padded to same length
         assert batch["input_ids"].shape[1] == 10  # Max text length
-        assert batch["modality_embeddings"].shape[1] == 12  # Max modality length
-        assert batch["kv_embeddings"].shape[1] == 20  # Max cross-attn length
         
         # Forward pass
         multimodal_model.train()
@@ -246,8 +257,8 @@ class TestConfigurationIntegration:
     """Test configuration parsing and usage."""
     
     def test_multimodal_config_in_training(self):
-        """Test that MultiModalConfig integrates properly with training args."""
-        multimodal_args = MultiModalConfig(
+        """Test that OctopusConfig integrates properly with training args."""
+        multimodal_args = OctopusConfig(
             use_custom_model=True,
             modality_vocab_size=10000,
             modality_embedding_dim=768,
@@ -266,7 +277,7 @@ class TestConfigurationIntegration:
     
     def test_multimodal_disabled(self):
         """Test that multimodal can be disabled."""
-        multimodal_args = MultiModalConfig(
+        multimodal_args = OctopusConfig(
             use_custom_model=False,
         )
         
@@ -289,7 +300,7 @@ class TestPEFTIntegration:
     def multimodal_model(self, small_config):
         """Create a small multimodal model for testing."""
         llm = AutoModelForCausalLM.from_config(small_config, attn_implementation="eager")
-        model = MultiModalLLM(
+        model = Octopus(
             llm_model=llm,
             modality_vocab_size=1000,
             modality_embedding_dim=256,
@@ -323,8 +334,8 @@ class TestPEFTIntegration:
         # Apply PEFT to LLM before wrapping
         peft_llm = get_peft_model(llm, lora_config)
         
-        # Wrap in MultiModalLLM
-        multimodal_model = MultiModalLLM(
+        # Wrap in Octopus
+        multimodal_model = Octopus(
             llm_model=peft_llm,
             modality_vocab_size=1000,
             modality_embedding_dim=256,
@@ -371,8 +382,8 @@ class TestPEFTIntegration:
         # Apply PEFT to LLM before wrapping
         peft_llm = get_peft_model(llm, lora_config)
         
-        # Wrap in MultiModalLLM
-        multimodal_model = MultiModalLLM(
+        # Wrap in Octopus
+        multimodal_model = Octopus(
             llm_model=peft_llm,
             modality_vocab_size=1000,
             modality_embedding_dim=256,
@@ -431,7 +442,7 @@ class TestPEFTIntegration:
             gradient_checkpointing=False,
         )
         
-        multimodal_args = MultiModalConfig(
+        multimodal_args = OctopusConfig(
             use_custom_model=True,
             modality_vocab_size=1000,
             modality_embedding_dim=768,  # Match GPT2's hidden size

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # coding=utf-8
 """
-Tests for integrated MultiModalLLM with encoder, patching, and fusion.
+Tests for integrated Octopus with encoder, patching, and fusion.
 """
 
 import pytest
@@ -9,9 +9,9 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from src.models.multimodal_llm import MultiModalLLM
-from src.models.multimodal_llm_config import (
-    MultiModalLLMConfig,
+from src.models.octopus import Octopus
+from src.models.octopus_config import (
+    OctopusConfig,
     EncoderConfig,
     PatchingConfig,
     FusionConfig,
@@ -55,8 +55,8 @@ def create_molecule_features(N):
     ], dim=-1)
 
 
-class TestMultiModalLLMIntegrated:
-    """Tests for integrated MultiModalLLM."""
+class TestOctopusIntegrated:
+    """Tests for integrated Octopus."""
     
     @pytest.fixture
     def small_llm(self):
@@ -72,23 +72,23 @@ class TestMultiModalLLMIntegrated:
     @pytest.fixture
     def multimodal_model(self, small_llm):
         """Create integrated multimodal model using config."""
-        config = MultiModalLLMConfig(
+        config = OctopusConfig(
             encoder=EncoderConfig(hidden_dim=128, num_layers=2, dropout=0.1),
             patching=PatchingConfig(k_max=8, r_max=32, steps=2, gate_hidden_dim=128),
             fusion=FusionConfig(num_blocks=2, num_heads=4, hidden_dim=128, dropout=0.1),
         )
-        model = MultiModalLLM(llm_model=small_llm, config=config)
+        model = Octopus(llm_model=small_llm, config=config)
         return model
     
     @pytest.fixture
     def multimodal_model_config(self, small_llm):
         """Create integrated multimodal model using config object."""
-        config = MultiModalLLMConfig(
+        config = OctopusConfig(
             encoder=EncoderConfig(hidden_dim=128, num_layers=2, dropout=0.1),
             patching=PatchingConfig(k_max=8, r_max=32, steps=2, gate_hidden_dim=128),
             fusion=FusionConfig(num_blocks=2, num_heads=4, hidden_dim=128, dropout=0.1),
         )
-        model = MultiModalLLM(llm_model=small_llm, config=config)
+        model = Octopus(llm_model=small_llm, config=config)
         return model
     
     def test_initialization(self, multimodal_model):
@@ -111,7 +111,7 @@ class TestMultiModalLLMIntegrated:
     
     def test_initialization_with_preset_config(self, small_llm):
         """Test model initialization with preset config."""
-        model = MultiModalLLM(llm_model=small_llm, config=SmallConfig())
+        model = Octopus(llm_model=small_llm, config=SmallConfig())
         assert model.encoder is not None
         assert model.config_mm.patching.k_max == 16  # SmallConfig default
         assert model.config_mm.encoder.hidden_dim == 128  # SmallConfig default
@@ -119,7 +119,7 @@ class TestMultiModalLLMIntegrated:
     def test_config_override(self, small_llm):
         """Test that individual params override config."""
         config = SmallConfig()  # k_max=16 by default
-        model = MultiModalLLM(llm_model=small_llm, config=config, k_max=24)
+        model = Octopus(llm_model=small_llm, config=config, k_max=24)
         assert model.config_mm.patching.k_max == 16  # Config not overridden (removed legacy support)
     
     def test_forward_text_only(self, multimodal_model):

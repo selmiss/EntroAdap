@@ -1,5 +1,5 @@
 """
-Feature Embedder for Molecular and Protein Graphs
+All-Atom Embedder for Molecular and Protein Graphs
 
 Compact embedder that handles both protein and molecule features with automatic detection.
 Uses offset-based embedding tables for categorical features and RBF for continuous features.
@@ -29,9 +29,9 @@ class RBFExpansion(nn.Module):
         return torch.exp(-self.gamma * diff ** 2)
 
 
-class FeatureEmbedder(nn.Module):
+class AAEmbedder(nn.Module):
     """
-    Unified feature embedder using offset-based embedding for categorical features.
+    Unified all-atom feature embedder using offset-based embedding for categorical features.
     
     Protein node features (7): [atomic_number(119), atom_name(46), residue(24), chain(27), residue_id(cont), is_backbone(2), is_ca(2)]
     Molecule node features (9): [atomic_num(119), chirality(4), degree(12), charge(12), numH(10), radical(6), hybrid(6), aromatic(2), ring(2)]

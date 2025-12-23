@@ -391,7 +391,7 @@ class TestIntegrationWithCollator:
     
     def test_bfs_masking_creates_patches(self):
         """Test that BFS masking creates connected patches."""
-        from src.data_loader.graph_dataset import GraphBatchCollator
+        from src.data_loader.aa_dataset import GraphBatchCollator
         
         # Create a simple graph structure
         batch_data = {

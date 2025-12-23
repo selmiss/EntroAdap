@@ -6,8 +6,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.models.geo_encoder import GeoEncoder
-from src.trainer.masked_reconstruction import MaskedReconstructionTrainer
+from src.models.aa_encoder import AAEncoder
+from src.trainer.reconstruction import ReconstructionTrainer
 
 
 def create_protein_data(N, E):
@@ -73,7 +73,7 @@ def create_molecule_data(N, E_chem=None, E_spatial=None):
 
 @pytest.fixture
 def encoder():
-    return GeoEncoder(
+    return AAEncoder(
         hidden_dim=64,
         num_layers=2,
         dropout=0.0,
@@ -85,7 +85,7 @@ def encoder():
 
 @pytest.fixture
 def trainer(encoder):
-    return MaskedReconstructionTrainer(
+    return ReconstructionTrainer(
         encoder=encoder,
         num_elements=119,
         num_dist_bins=32,
@@ -474,8 +474,8 @@ def test_loss_weights(trainer):
     E = 40
     
     # Create trainer with custom weights
-    encoder = GeoEncoder(hidden_dim=64, num_layers=2)
-    weighted_trainer = MaskedReconstructionTrainer(
+    encoder = AAEncoder(hidden_dim=64, num_layers=2)
+    weighted_trainer = ReconstructionTrainer(
         encoder=encoder,
         element_weight=2.0,
         dist_weight=1.5,

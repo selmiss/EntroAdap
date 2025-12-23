@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # coding=utf-8
 """
-Tests for patch injection functionality in MultiModalLLM.
+Tests for patch injection functionality in Octopus.
 
 Tests the new INSERT-based patch injection (not replace) with proper
 handling of attention masks, labels, and <STRUCTURE> token positioning.
@@ -11,9 +11,9 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from src.models.multimodal_llm import MultiModalLLM
-from src.models.multimodal_llm_config import SmallConfig
-from src.data_loader.multimodal_collator import preprocess_multimodal_dataset
+from src.models.octopus import Octopus
+from src.models.octopus_config import SmallConfig
+from src.data_loader.octopus_collator import preprocess_multimodal_dataset
 from datasets import Dataset
 
 
@@ -47,7 +47,7 @@ class TestPatchInjection:
     @pytest.fixture
     def multimodal_model(self, small_llm):
         """Create integrated multimodal model."""
-        model = MultiModalLLM(llm_model=small_llm, config=SmallConfig())
+        model = Octopus(llm_model=small_llm, config=SmallConfig())
         return model
     
     def test_inject_patches_basic(self, multimodal_model):
@@ -432,7 +432,7 @@ class TestStructureTokenIntegration:
         dataset_dict = DatasetDict({"train": train_dataset})
         
         # Preprocess
-        from src.data_loader.multimodal_collator import preprocess_multimodal_dataset
+        from src.data_loader.octopus_collator import preprocess_multimodal_dataset
         processed = preprocess_multimodal_dataset(
             dataset_dict,
             tokenizer=tokenizer,

@@ -82,7 +82,7 @@ training:
 
 # Wandb configuration
 wandb:
-  project: EntroAdap-MaskedReconstruction
+  project: EntroAdap-Reconstruction
   entity: null  # Set to your wandb entity/team name
   tags: [masked_reconstruction, pretraining, graph_encoder, deepspeed]
   notes: Masked reconstruction pre-training with DeepSpeed ZeRO-2

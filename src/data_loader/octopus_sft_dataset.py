@@ -2,7 +2,7 @@
 Multi-modal SFT Dataset and Collator for Graph + Text Training
 
 This module integrates graph structures (protein/molecule) with text instructions
-for supervised fine-tuning of MultiModalLLM.
+for supervised fine-tuning of Octopus.
 
 Dataset Format (JSONL):
 {
@@ -34,7 +34,7 @@ import json
 import pandas as pd
 import numpy as np
 
-from .graph_dataset import GraphDataset
+from .aa_dataset import GraphDataset
 from src.data_factory.protein.pdbid_to_feature import pdbid_to_features
 from src.data_factory.molecule.mol_structure import generate_2d_3d_from_smiles
 

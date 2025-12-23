@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from src.configs import ScriptArguments
+from src.models.training_configs import ScriptArguments
 from utils.env_utils import expand_env_vars
 
 

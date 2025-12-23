@@ -20,7 +20,7 @@ import trl
 
 
 @dataclass
-class MultiModalConfig:
+class OctopusConfig:
     """
     Configuration for multi-modal model architecture.
     

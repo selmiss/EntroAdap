@@ -1,3 +1,3 @@
-from .masked_reconstruction import MaskedReconstructionTrainer
+from .reconstruction import ReconstructionTrainer
 
-__all__ = ['MaskedReconstructionTrainer']
+__all__ = ['ReconstructionTrainer']

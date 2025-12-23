@@ -5,7 +5,7 @@ Unit tests for EGNN Backbone
 import pytest
 import torch
 import torch.nn as nn
-from src.models.components.egnn_backbone import EGNNBackbone, EGNNLayer, MLP
+from src.models.components.egnn import EGNNBackbone, EGNNLayer, MLP
 
 
 class TestMLP:

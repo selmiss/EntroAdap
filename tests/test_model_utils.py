@@ -9,9 +9,9 @@ import torch
 from transformers import AutoConfig
 from trl import ModelConfig
 
-from src.configs import SFTConfig, MultiModalConfig
+from src.models.training_configs import SFTConfig, OctopusConfig
 from utils.model_utils import get_custom_model, get_model_and_peft_config
-from src.models import MultiModalLLM
+from src.models import Octopus
 
 
 class TestModelUtils:
@@ -38,7 +38,7 @@ class TestModelUtils:
     @pytest.fixture
     def multimodal_args(self):
         """Create multimodal arguments for testing."""
-        return MultiModalConfig(
+        return OctopusConfig(
             use_custom_model=True,
             modality_vocab_size=1000,
             modality_embedding_dim=256,
@@ -52,10 +52,13 @@ class TestModelUtils:
         """Test loading custom multimodal model."""
         model = get_custom_model(model_args, training_args, multimodal_args)
         
-        assert isinstance(model, MultiModalLLM)
-        assert model.modality_embedding.num_embeddings == 1000
-        assert model.modality_embedding.embedding_dim == 256
+        assert isinstance(model, Octopus)
+        # Check that the model has the expected components
+        assert hasattr(model, 'encoder')
+        assert hasattr(model, 'fusion_blocks')
         assert len(model.fusion_blocks) == 2
+        # Check encoder hidden dim matches config
+        assert model.encoder.hidden_dim == 256
     
     @pytest.mark.slow
     def test_get_custom_model_with_different_configs(
@@ -63,7 +66,7 @@ class TestModelUtils:
     ):
         """Test loading custom model with different configurations."""
         # Test with larger model
-        multimodal_args = MultiModalConfig(
+        multimodal_args = OctopusConfig(
             use_custom_model=True,
             modality_vocab_size=5000,
             modality_embedding_dim=512,
@@ -74,9 +77,9 @@ class TestModelUtils:
         
         model = get_custom_model(model_args, training_args, multimodal_args)
         
-        assert isinstance(model, MultiModalLLM)
-        assert model.modality_embedding.num_embeddings == 5000
-        assert model.modality_embedding.embedding_dim == 512
+        assert isinstance(model, Octopus)
+        # Check encoder hidden dim and fusion blocks
+        assert model.encoder.hidden_dim == 512
         assert len(model.fusion_blocks) == 4
     
     @pytest.mark.slow
@@ -84,7 +87,7 @@ class TestModelUtils:
         self, model_args, training_args
     ):
         """Test loading custom model with custom hidden dimensions."""
-        multimodal_args = MultiModalConfig(
+        multimodal_args = OctopusConfig(
             use_custom_model=True,
             modality_vocab_size=1000,
             modality_embedding_dim=256,
@@ -97,7 +100,7 @@ class TestModelUtils:
         
         model = get_custom_model(model_args, training_args, multimodal_args)
         
-        assert isinstance(model, MultiModalLLM)
+        assert isinstance(model, Octopus)
         # Check that custom dimensions are respected
         assert model.fusion_blocks[0].ffn.fc1.out_features == 2048
 
@@ -128,18 +131,18 @@ class TestModelUtils:
         assert peft_config is sentinel_peft
 
         # Multimodal path => peft_config must be None (handled inside get_custom_model)
-        mm_args = MultiModalConfig(use_custom_model=True)
+        mm_args = OctopusConfig(use_custom_model=True)
         model, peft_config = get_model_and_peft_config(model_args, training_args, multimodal_args=mm_args)
         assert model is sentinel_model
         assert peft_config is None
 
 
 class TestMultiModalConfig:
-    """Tests for MultiModalConfig."""
+    """Tests for OctopusConfig."""
     
     def test_default_values(self):
         """Test default configuration values."""
-        config = MultiModalConfig()
+        config = OctopusConfig()
         
         assert config.use_custom_model is False
         assert config.modality_vocab_size == 10000
@@ -150,7 +153,7 @@ class TestMultiModalConfig:
     
     def test_custom_values(self):
         """Test creating config with custom values."""
-        config = MultiModalConfig(
+        config = OctopusConfig(
             use_custom_model=True,
             modality_vocab_size=5000,
             modality_embedding_dim=512,

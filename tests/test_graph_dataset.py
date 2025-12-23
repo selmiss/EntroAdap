@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
 
-from src.data_loader.graph_dataset import GraphDataset, GraphBatchCollator
+from src.data_loader.aa_dataset import GraphDataset, GraphBatchCollator
 
 
 def create_test_parquet_protein(path: str, num_samples: int = 10):
@@ -405,12 +405,12 @@ class TestIntegration:
     
     def test_batch_format_for_trainer(self, protein_parquet_file, collator):
         """Test batch format is compatible with trainer."""
-        from src.models.geo_encoder import GeoEncoder
-        from src.trainer.masked_reconstruction import MaskedReconstructionTrainer
+        from src.models.aa_encoder import AAEncoder
+        from src.trainer.reconstruction import ReconstructionTrainer
         
         # Create model
-        encoder = GeoEncoder(hidden_dim=64, num_layers=2)
-        trainer = MaskedReconstructionTrainer(encoder=encoder)
+        encoder = AAEncoder(hidden_dim=64, num_layers=2)
+        trainer = ReconstructionTrainer(encoder=encoder)
         
         # Create batch
         dataset = GraphDataset(protein_parquet_file, split='train')

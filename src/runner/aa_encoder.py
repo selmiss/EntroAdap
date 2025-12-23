@@ -15,9 +15,9 @@ from pathlib import Path
 from datetime import datetime
 from transformers import TrainingArguments, Trainer, HfArgumentParser
 
-from src.models.geo_encoder import GeoEncoder
-from src.trainer.masked_reconstruction import MaskedReconstructionTrainer
-from src.data_loader.graph_dataset import GraphDataset, GraphBatchCollator
+from src.models.aa_encoder import AAEncoder
+from src.trainer.reconstruction import ReconstructionTrainer
+from src.data_loader.aa_dataset import GraphDataset, GraphBatchCollator
 
 try:
     import wandb
@@ -81,7 +81,7 @@ class ScriptArguments:
         metadata={"help": "Path to YAML config file. If provided, will override other arguments."}
     )
     wandb_project: Optional[str] = field(
-        default="EntroAdap-MaskedReconstruction",
+        default="EntroAdap-Reconstruction",
         metadata={"help": "Wandb project name"}
     )
     wandb_entity: Optional[str] = field(
@@ -98,7 +98,7 @@ class ScriptArguments:
     )
 
 
-class MaskedReconstructionTrainerWrapper(Trainer):
+class ReconstructionTrainerWrapper(Trainer):
     """
     Custom Trainer wrapper for masked reconstruction.
     
@@ -132,7 +132,7 @@ class MaskedReconstructionTrainerWrapper(Trainer):
         Compute loss for masked reconstruction.
         
         Args:
-            model: MaskedReconstructionTrainer instance
+            model: ReconstructionTrainer instance
             inputs: Batch dictionary from GraphBatchCollator
             return_outputs: Whether to return model outputs
             num_items_in_batch: Number of items in batch (for newer transformers versions)
@@ -253,7 +253,7 @@ def setup_wandb(config: Dict[str, Any], script_args: ScriptArguments, training_a
     # Get wandb config from YAML or script args
     wandb_config = config.get('wandb', {})
     
-    project = script_args.wandb_project or wandb_config.get('project', 'EntroAdap-MaskedReconstruction')
+    project = script_args.wandb_project or wandb_config.get('project', 'EntroAdap-Reconstruction')
     entity = script_args.wandb_entity or wandb_config.get('entity', None)
     tags = script_args.wandb_tags.split(',') if script_args.wandb_tags else wandb_config.get('tags', [])
     notes = script_args.wandb_notes or wandb_config.get('notes', None)
@@ -314,7 +314,7 @@ def main():
     
     # Create model
     logger.info("Creating model...")
-    encoder = GeoEncoder(
+    encoder = AAEncoder(
         hidden_dim=model_args.hidden_dim,
         num_layers=model_args.num_layers,
         dropout=model_args.dropout,
@@ -324,7 +324,7 @@ def main():
         rbf_max=model_args.rbf_max,
     )
     
-    model = MaskedReconstructionTrainer(
+    model = ReconstructionTrainer(
         encoder=encoder,
         num_elements=model_args.num_elements,
         num_dist_bins=model_args.num_dist_bins,
@@ -393,7 +393,7 @@ def main():
     
     # Create trainer
     logger.info("Creating trainer...")
-    trainer = MaskedReconstructionTrainerWrapper(
+    trainer = ReconstructionTrainerWrapper(
         model=model,
         args=training_args,
         train_dataset=train_dataset,

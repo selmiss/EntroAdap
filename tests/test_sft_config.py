@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Dict
 
-from src.configs import ScriptArguments, SFTConfig
+from src.models.training_configs import ScriptArguments, SFTConfig
 from utils.env_utils import expand_env_vars
 
 
@@ -125,7 +125,7 @@ class TestDatasetMixtureConfig:
     
     def test_attribute_naming_consistency(self):
         """Ensure dataset_mixture is consistently named throughout the codebase."""
-        from src.configs import ScriptArguments
+        from src.models.training_configs import ScriptArguments
         from utils.data import get_dataset
         
         # ScriptArguments should have dataset_mixture

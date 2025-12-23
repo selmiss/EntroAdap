@@ -1,8 +1,8 @@
-"""Tests for GeoEncoder - Combined Feature Embedder + EGNN Backbone"""
+"""Tests for AAEncoder - Combined Feature Embedder + EGNN Backbone"""
 
 import pytest
 import torch
-from src.models import GeoEncoder
+from src.models import AAEncoder
 
 
 def create_protein_features(N):
@@ -42,13 +42,13 @@ def create_chem_edge_features(E):
     return edge_feat
 
 
-class TestGeoEncoder:
-    """Test suite for GeoEncoder."""
+class TestAAEncoder:
+    """Test suite for AAEncoder."""
     
     @pytest.fixture
     def encoder(self):
         """Create a small encoder for testing."""
-        return GeoEncoder(
+        return AAEncoder(
             hidden_dim=64,
             num_layers=2,
             dropout=0.0,
@@ -272,7 +272,7 @@ class TestGeoEncoder:
     
     def test_no_coord_update(self):
         """Test encoder with coordinate updates disabled."""
-        encoder = GeoEncoder(
+        encoder = AAEncoder(
             hidden_dim=64,
             num_layers=2,
             update_coords=False,
@@ -302,7 +302,7 @@ class TestGeoEncoder:
     def test_different_hidden_dims(self):
         """Test encoder with different hidden dimensions."""
         for hidden_dim in [32, 128, 256]:
-            encoder = GeoEncoder(hidden_dim=hidden_dim, num_layers=2)
+            encoder = AAEncoder(hidden_dim=hidden_dim, num_layers=2)
             
             N, E = 10, 20
             # Create protein features with proper ranges

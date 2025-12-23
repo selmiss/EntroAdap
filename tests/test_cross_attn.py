@@ -8,7 +8,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.models.fusion_blocks import FeedForward, FusionBlock
+from src.models.cross_attn import FeedForward, FusionBlock
 
 
 class TestFeedForward:

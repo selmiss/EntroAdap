@@ -4,14 +4,14 @@ from typing import Optional, Tuple, Dict, Any
 from transformers import AutoModelForCausalLM, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from .fusion_blocks import FusionBlock
-from .geo_encoder import GeoEncoder
-from .con_gates import AnchorGate, EdgeGate, soft_patch_grow
-from .multimodal_llm_config import MultiModalLLMConfig, BaseConfig
+from .cross_attn import FusionBlock
+from .aa_encoder import AAEncoder
+from .gates import AnchorGate, EdgeGate, soft_patch_grow
+from .octopus_config import OctopusConfig, BaseConfig
 
 
-class MultiModalLLM(PreTrainedModel):
-    """Multi-modal LLM integrating graph encoder, instruction-conditioned patching, and cross-attention fusion."""
+class Octopus(PreTrainedModel):
+    """Octopus: Multi-modal LLM integrating graph encoder, instruction-conditioned patching, and cross-attention fusion."""
 
     # This custom wrapper architecture does not implement SDPA/FlashAttention kernels.
     # Tell Transformers to fall back to eager attention to avoid init-time errors.
@@ -22,31 +22,31 @@ class MultiModalLLM(PreTrainedModel):
     def __init__(
         self,
         llm_model: AutoModelForCausalLM,
-        config: Optional[MultiModalLLMConfig] = None,
+        config: Optional[OctopusConfig] = None,
         **kwargs,
     ):
         """
-        Initialize integrated multimodal LLM.
+        Initialize Octopus model.
         
         Args:
             llm_model: Pre-loaded language model
-            config: MultiModalLLMConfig object (default: BaseConfig())
+            config: OctopusConfig object (default: BaseConfig())
             **kwargs: Legacy individual params (override config if provided)
         
         Examples:
             # Recommended: Use config
-            model = MultiModalLLM(llm_model=llm, config=BaseConfig())
+            model = Octopus(llm_model=llm, config=BaseConfig())
             
             # Custom config
-            config = MultiModalLLMConfig(
+            config = OctopusConfig(
                 encoder=EncoderConfig(hidden_dim=256),
                 patching=PatchingConfig(k_max=32),
                 fusion=FusionConfig(num_blocks=4),
             )
-            model = MultiModalLLM(llm_model=llm, config=config)
+            model = Octopus(llm_model=llm, config=config)
             
             # Legacy: Override specific params
-            model = MultiModalLLM(llm_model=llm, config=BaseConfig(), k_max=48)
+            model = Octopus(llm_model=llm, config=BaseConfig(), k_max=48)
         """
         # Ensure the wrapper itself doesn't try to opt into SDPA/FlashAttention.
         try:
@@ -68,7 +68,7 @@ class MultiModalLLM(PreTrainedModel):
         fusion_cfg = self.config_mm.fusion
         
         # 1. Graph encoder
-        self.encoder = GeoEncoder(
+        self.encoder = AAEncoder(
             hidden_dim=enc_cfg.hidden_dim,
             num_layers=enc_cfg.num_layers,
             dropout=enc_cfg.dropout,

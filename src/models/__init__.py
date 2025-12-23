@@ -13,18 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .components.egnn_backbone import EGNNBackbone, EGNNLayer
-from .fusion_blocks import FeedForward, FusionBlock
-from .multimodal_llm import MultiModalLLM
-from .components.feature_embedder import FeatureEmbedder
-from .geo_encoder import GeoEncoder
+from .components.egnn import EGNNBackbone, EGNNLayer
+from .cross_attn import FeedForward, FusionBlock
+from .octopus import Octopus
+from .components.aa_embedder import AAEmbedder
+from .aa_encoder import AAEncoder
 
 __all__ = [
     "EGNNBackbone",
     "EGNNLayer",
-    "FeatureEmbedder",
-    "GeoEncoder",
+    "AAEmbedder",
+    "AAEncoder",
     "FeedForward",
     "FusionBlock",
-    "MultiModalLLM",
+    "Octopus",
 ]

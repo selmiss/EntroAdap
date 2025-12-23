@@ -1,11 +1,11 @@
 """
-Tests for GeoEncoder with Modality-Based Input
-Tests that GeoEncoder can handle different modalities through its forward method.
+Tests for AAEncoder with Modality-Based Input
+Tests that AAEncoder can handle different modalities through its forward method.
 """
 
 import pytest
 import torch
-from src.models import GeoEncoder
+from src.models import AAEncoder
 
 
 def create_protein_features(N):
@@ -45,13 +45,13 @@ def create_chem_edge_features(E):
     return edge_feat
 
 
-class TestGeoEncoderModality:
-    """Test suite for GeoEncoder with modality-based inputs."""
+class TestAAEncoderModality:
+    """Test suite for AAEncoder with modality-based inputs."""
     
     @pytest.fixture
     def encoder(self):
         """Create a small encoder for testing."""
-        return GeoEncoder(
+        return AAEncoder(
             hidden_dim=64,
             num_layers=2,
             dropout=0.0,
@@ -60,7 +60,7 @@ class TestGeoEncoderModality:
         )
     
     def test_protein_modality_input(self, encoder):
-        """Test that GeoEncoder accepts protein input with modality key."""
+        """Test that AAEncoder accepts protein input with modality key."""
         N, E = 10, 20
         
         # Create protein graph data with modality wrapper
@@ -273,7 +273,7 @@ class TestGeoEncoderModality:
     
     def test_no_coordinates_update(self):
         """Test that coordinates remain unchanged when update_coords=False."""
-        encoder = GeoEncoder(
+        encoder = AAEncoder(
             hidden_dim=64,
             num_layers=2,
             update_coords=False,
@@ -304,7 +304,7 @@ class TestGeoEncoderModality:
         N, E = 10, 20
         
         for hidden_dim in [32, 128, 256]:
-            encoder = GeoEncoder(hidden_dim=hidden_dim, num_layers=2)
+            encoder = AAEncoder(hidden_dim=hidden_dim, num_layers=2)
             
             node_feat = create_protein_features(N)
             
@@ -328,7 +328,7 @@ class TestGeoEncoderModality:
         N, E = 10, 20
         
         for num_layers in [1, 3, 6]:
-            encoder = GeoEncoder(hidden_dim=64, num_layers=num_layers)
+            encoder = AAEncoder(hidden_dim=64, num_layers=num_layers)
             
             data = {
                 'modality': 'molecule',

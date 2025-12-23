@@ -64,7 +64,7 @@ class GraphDataset(Dataset):
         Get a single graph sample.
         
         Returns:
-            Dictionary with 'modality' and 'value' keys matching FeatureEmbedder input format
+            Dictionary with 'modality' and 'value' keys matching AAEmbedder input format
         """
         item = self.dataset[idx]
         modality = item['modality']

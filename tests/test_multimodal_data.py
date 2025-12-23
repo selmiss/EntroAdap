@@ -13,7 +13,7 @@ from transformers import AutoTokenizer
 
 from src.data_loader import MultiModalDataCollator
 from utils.data import get_dataset
-from src.configs import ScriptArguments
+from src.models.training_configs import ScriptArguments
 
 
 class TestMultiModalDataLoading:
@@ -129,16 +129,12 @@ class TestMultiModalDataLoading:
         assert 'input_ids' in batch
         assert 'attention_mask' in batch
         assert 'labels' in batch
-        assert 'modality_embeddings' in batch
-        assert 'modality_attention_mask' in batch
-        assert 'kv_embeddings' in batch
-        assert 'text_attention_mask' in batch
+        # Note: The new collator expects graph_data, not modality_embeddings
+        # This test is using old-style features, so it won't have graph_data
         
         # Check shapes
         batch_size = len(features)
         assert batch['input_ids'].shape[0] == batch_size
-        assert batch['modality_embeddings'].shape[0] == batch_size
-        assert batch['kv_embeddings'].shape[0] == batch_size
 
 
 class TestMultiModalCollator:
@@ -158,41 +154,51 @@ class TestMultiModalCollator:
             tokenizer=tokenizer,
             padding=True,
             return_tensors="pt",
-            include_modality_tokens=True,
         )
     
-    def test_collate_with_modality_embeddings(self, collator):
-        """Test collating examples with modality embeddings."""
-        embed_dim = 256
-        text_dim = 768
+    def test_collate_with_graph_data(self, collator):
+        """Test collating examples with graph data."""
+        # Create minimal graph data
+        graph_1 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],  # 3 nodes
+                'pos': [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+                'edge_index': [[0, 1], [1, 2]],
+            }
+        }
+        graph_2 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.7, 0.8], [0.9, 1.0]],  # 2 nodes
+                'pos': [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]],
+                'edge_index': [[0, 1]],
+            }
+        }
         features = [
             {
                 'input_ids': [1, 2, 3, 4, 5],
                 'attention_mask': [1, 1, 1, 1, 1],
                 'labels': [1, 2, 3, 4, 5],
-                'modality_embeddings': [[0.1] * embed_dim for _ in range(3)],
-                'kv_embeddings': [[0.2] * text_dim for _ in range(4)],
+                'graph_data': graph_1,
             },
             {
                 'input_ids': [6, 7, 8],
                 'attention_mask': [1, 1, 1],
                 'labels': [6, 7, 8],
-                'modality_embeddings': [[0.3] * embed_dim for _ in range(2)],
-                'kv_embeddings': [[0.4] * text_dim for _ in range(2)],
+                'graph_data': graph_2,
             },
         ]
         
         batch = collator(features)
         
-        # Check that modality embeddings are padded
-        assert batch['modality_embeddings'].shape == (2, 3, embed_dim)  # Max length is 3
-        assert batch['modality_attention_mask'].shape == (2, 3)
-        
-        # Check padding
-        assert batch['modality_attention_mask'][1, 2] == 0  # Masked
+        # Check that graph data is present
+        assert 'graph_data' in batch
+        assert batch['graph_data']['modality'] == 'protein'
+        assert 'batch' in batch  # Node-to-graph assignment
     
-    def test_collate_without_modality_embeddings(self, collator):
-        """Test collating examples without modality embeddings."""
+    def test_collate_without_graph_data(self, collator):
+        """Test collating examples without graph data."""
         features = [
             {
                 'input_ids': [1, 2, 3, 4, 5],
@@ -208,34 +214,46 @@ class TestMultiModalCollator:
         
         batch = collator(features)
         
-        # Should not have modality fields
-        assert 'modality_embeddings' not in batch or batch['modality_embeddings'].numel() == 0
+        # Should not have graph data
+        assert 'graph_data' not in batch
     
     def test_collate_varying_lengths(self, collator):
         """Test collating examples with varying sequence lengths."""
-        embed_dim = 256
-        text_dim = 768
+        graph_1 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.1] * 10 for _ in range(5)],  # 5 nodes
+                'pos': [[1.0, 2.0, 3.0] for _ in range(5)],
+                'edge_index': [[0, 1, 2, 3], [1, 2, 3, 4]],
+            }
+        }
+        graph_2 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.2] * 10 for _ in range(2)],  # 2 nodes
+                'pos': [[1.0, 1.0, 1.0] for _ in range(2)],
+                'edge_index': [[0], [1]],
+            }
+        }
         features = [
             {
                 'input_ids': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 'labels': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                'modality_embeddings': [[0.1] * embed_dim for _ in range(5)],
-                'kv_embeddings': [[0.2] * text_dim for _ in range(3)],
+                'graph_data': graph_1,
             },
             {
                 'input_ids': [11, 12],
                 'labels': [11, 12],
-                'modality_embeddings': [[0.3] * embed_dim for _ in range(1)],
-                'kv_embeddings': [[0.4] * text_dim for _ in range(4)],
+                'graph_data': graph_2,
             },
         ]
         
         batch = collator(features)
         
-        # All sequences should be padded to max length
+        # All text sequences should be padded to max length
         assert batch['input_ids'].shape[1] == 10  # Max text length
-        assert batch['modality_embeddings'].shape[1] == 5  # Max modality length
-        assert batch['kv_embeddings'].shape[1] == 4  # Max cross-attn length
+        # Graph data is merged, not padded
+        assert 'graph_data' in batch
         
         # Check padding values
         assert batch['labels'][1, 2] == -100  # Padded label

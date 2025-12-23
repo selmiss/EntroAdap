@@ -8,13 +8,13 @@ import tempfile
 import os
 from unittest.mock import Mock, patch
 
-from src.runner.train_masked_reconstruction import (
+from src.runner.aa_encoder import (
     ModelArguments,
     DataArguments,
-    MaskedReconstructionTrainerWrapper,
+    ReconstructionTrainerWrapper,
 )
-from src.models.geo_encoder import GeoEncoder
-from src.trainer.masked_reconstruction import MaskedReconstructionTrainer
+from src.models.aa_encoder import AAEncoder
+from src.trainer.reconstruction import ReconstructionTrainer
 
 
 class TestModelArguments:
@@ -71,8 +71,8 @@ class TestTrainerWrapper:
     @pytest.fixture
     def model(self):
         """Create test model."""
-        encoder = GeoEncoder(hidden_dim=64, num_layers=2)
-        return MaskedReconstructionTrainer(encoder=encoder)
+        encoder = AAEncoder(hidden_dim=64, num_layers=2)
+        return ReconstructionTrainer(encoder=encoder)
     
     @pytest.fixture
     def mock_batch(self):
@@ -122,7 +122,7 @@ class TestTrainerWrapper:
                 per_device_train_batch_size=2,
             )
             
-            trainer = MaskedReconstructionTrainerWrapper(
+            trainer = ReconstructionTrainerWrapper(
                 model=model,
                 args=training_args,
             )
@@ -154,7 +154,7 @@ class TestTrainerWrapper:
                 logging_steps=1,
             )
             
-            trainer = MaskedReconstructionTrainerWrapper(
+            trainer = ReconstructionTrainerWrapper(
                 model=model,
                 args=training_args,
             )
@@ -175,7 +175,7 @@ class TestTrainerWrapper:
                 per_device_train_batch_size=2,
             )
             
-            trainer = MaskedReconstructionTrainerWrapper(
+            trainer = ReconstructionTrainerWrapper(
                 model=model,
                 args=training_args,
             )
@@ -199,7 +199,7 @@ class TestTrainerWrapper:
                 per_device_train_batch_size=2,
             )
             
-            trainer = MaskedReconstructionTrainerWrapper(
+            trainer = ReconstructionTrainerWrapper(
                 model=model,
                 args=training_args,
             )
@@ -226,13 +226,13 @@ class TestTrainingIntegration:
             num_layers=3,
         )
         
-        encoder = GeoEncoder(
+        encoder = AAEncoder(
             hidden_dim=model_args.hidden_dim,
             num_layers=model_args.num_layers,
             dropout=model_args.dropout,
         )
         
-        model = MaskedReconstructionTrainer(
+        model = ReconstructionTrainer(
             encoder=encoder,
             num_elements=model_args.num_elements,
             num_dist_bins=model_args.num_dist_bins,
@@ -244,7 +244,7 @@ class TestTrainingIntegration:
     
     def test_collator_creation(self):
         """Test collator creation from arguments."""
-        from src.data_loader.graph_dataset import GraphBatchCollator
+        from src.data_loader.aa_dataset import GraphBatchCollator
         
         data_args = DataArguments(
             train_data_path="/dummy/path",

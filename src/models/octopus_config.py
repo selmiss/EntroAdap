@@ -1,5 +1,5 @@
 """
-Configuration classes for MultiModalLLM.
+Configuration classes for Octopus.
 """
 
 from dataclasses import dataclass, field
@@ -8,7 +8,7 @@ from typing import Optional
 
 @dataclass
 class EncoderConfig:
-    """Configuration for GeoEncoder."""
+    """Configuration for AAEncoder."""
     hidden_dim: int = 256
     num_layers: int = 6
     dropout: float = 0.1
@@ -38,24 +38,24 @@ class FusionConfig:
 
 
 @dataclass
-class MultiModalLLMConfig:
+class OctopusConfig:
     """
-    Complete configuration for MultiModalLLM.
+    Complete configuration for Octopus.
     
     Example:
-        config = MultiModalLLMConfig(
+        config = OctopusConfig(
             encoder=EncoderConfig(hidden_dim=256, num_layers=6),
             patching=PatchingConfig(k_max=32, r_max=64),
             fusion=FusionConfig(num_blocks=4, num_heads=8),
         )
-        model = MultiModalLLM(llm_model=llm, config=config)
+        model = Octopus(llm_model=llm, config=config)
     """
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     patching: PatchingConfig = field(default_factory=PatchingConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
     
     @classmethod
-    def from_dict(cls, config_dict: dict) -> 'MultiModalLLMConfig':
+    def from_dict(cls, config_dict: dict) -> 'OctopusConfig':
         """Create config from dictionary."""
         encoder_cfg = EncoderConfig(**config_dict.get('encoder', {}))
         patching_cfg = PatchingConfig(**config_dict.get('patching', {}))
@@ -73,7 +73,7 @@ class MultiModalLLMConfig:
 
 # Preset configurations
 @dataclass
-class SmallConfig(MultiModalLLMConfig):
+class SmallConfig(OctopusConfig):
     """Small model configuration for testing/prototyping."""
     encoder: EncoderConfig = field(default_factory=lambda: EncoderConfig(
         hidden_dim=128, num_layers=3, dropout=0.1
@@ -87,7 +87,7 @@ class SmallConfig(MultiModalLLMConfig):
 
 
 @dataclass
-class BaseConfig(MultiModalLLMConfig):
+class BaseConfig(OctopusConfig):
     """Base model configuration (default)."""
     encoder: EncoderConfig = field(default_factory=lambda: EncoderConfig(
         hidden_dim=256, num_layers=6, dropout=0.1
@@ -101,7 +101,7 @@ class BaseConfig(MultiModalLLMConfig):
 
 
 @dataclass
-class LargeConfig(MultiModalLLMConfig):
+class LargeConfig(OctopusConfig):
     """Large model configuration."""
     encoder: EncoderConfig = field(default_factory=lambda: EncoderConfig(
         hidden_dim=512, num_layers=12, dropout=0.1

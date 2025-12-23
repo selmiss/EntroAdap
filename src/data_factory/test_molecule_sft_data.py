@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.data_loader.multimodal_sft_dataset import MultiModalSFTDataset
+from src.data_loader.octopus_sft_dataset import MultiModalSFTDataset
 import torch
 
 def test_dataset_loading():

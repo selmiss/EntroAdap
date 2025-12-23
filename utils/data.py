@@ -4,7 +4,7 @@ import os
 import datasets
 from datasets import DatasetDict, concatenate_datasets
 
-from src.configs import ScriptArguments
+from src.models.training_configs import ScriptArguments
 
 
 logger = logging.getLogger(__name__)

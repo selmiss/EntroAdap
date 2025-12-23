@@ -1,5 +1,5 @@
 """
-Custom SFT Trainer for MultiModalLLM that properly passes graph data.
+Custom SFT Trainer for Octopus that properly passes graph data.
 """
 
 from typing import Dict, Any, Optional
@@ -10,7 +10,7 @@ from trl import SFTTrainer
 class MultiModalSFTTrainer(SFTTrainer):
     """
     Custom SFT Trainer that overrides compute_loss to pass graph_data
-    and related arguments to MultiModalLLM.forward().
+    and related arguments to Octopus.forward().
     """
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -18,7 +18,7 @@ class MultiModalSFTTrainer(SFTTrainer):
         Compute loss for multimodal training, passing graph data to model.
         
         Args:
-            model: MultiModalLLM instance
+            model: Octopus instance
             inputs: Batch dictionary from MultiModalDataCollator with:
                 - input_ids, attention_mask, labels (standard)
                 - graph_data, batch, instr_positions, patch_positions (multimodal)

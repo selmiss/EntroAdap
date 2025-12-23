@@ -13,10 +13,10 @@ from .graph_batch_utils import merge_protein_graphs, merge_molecule_graphs
 @dataclass
 class MultiModalDataCollator:
     """
-    Collates batches with text and graph structures for MultiModalLLM training.
+    Collates batches with text and graph structures for Octopus training.
     
     Works with SFTTrainer by handling pre-tokenized inputs and batching graph data.
-    Produces outputs compatible with MultiModalLLM.forward() signature:
+    Produces outputs compatible with Octopus.forward() signature:
     - input_ids, attention_mask, labels: [B, seq_len]
     - graph_data: {'modality': str, 'value': {node_feat, edge_index, pos, ...}}
     - batch: [N] node-to-graph assignment
@@ -220,7 +220,7 @@ class MultiModalDataCollator:
         """
         Collate a batch of examples with text and graph structures.
         
-        Returns batch compatible with MultiModalLLM.forward():
+        Returns batch compatible with Octopus.forward():
         - input_ids: [B, seq_len]
         - attention_mask: [B, seq_len]
         - labels: [B, seq_len]

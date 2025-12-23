@@ -8,7 +8,7 @@ import pytest
 import torch
 from transformers import AutoTokenizer
 
-from src.data_loader.multimodal_collator import MultiModalDataCollator
+from src.data_loader.octopus_collator import MultiModalDataCollator
 
 
 class TestMultiModalDataCollator:
@@ -28,7 +28,6 @@ class TestMultiModalDataCollator:
             tokenizer=tokenizer,
             padding=True,
             return_tensors="pt",
-            include_modality_tokens=True,
         )
     
     def test_collate_text_only(self, collator):
@@ -65,108 +64,125 @@ class TestMultiModalDataCollator:
         assert "labels" in batch
         assert batch["labels"].shape == batch["input_ids"].shape
     
-    def test_collate_with_modality_embeddings(self, collator):
-        """Test collating examples with modality embeddings."""
-        embed_dim = 256
+    def test_collate_with_graph_data(self, collator):
+        """Test collating examples with graph data."""
+        # Create minimal graph data for protein modality
+        graph_1 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],  # 3 nodes
+                'pos': [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+                'edge_index': [[0, 1], [1, 2]],  # 2 edges
+            }
+        }
+        graph_2 = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.7, 0.8], [0.9, 1.0]],  # 2 nodes
+                'pos': [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]],
+                'edge_index': [[0, 1]],  # 1 edge
+            }
+        }
+        
         features = [
             {
                 "input_ids": [1, 2, 3, 4, 5],
                 "attention_mask": [1, 1, 1, 1, 1],
-                "modality_embeddings": [[0.1] * embed_dim for _ in range(4)],
+                "graph_data": graph_1,
             },
             {
                 "input_ids": [6, 7, 8],
                 "attention_mask": [1, 1, 1],
-                "modality_embeddings": [[0.2] * embed_dim for _ in range(2)],
+                "graph_data": graph_2,
             },
         ]
         
         batch = collator(features)
         
-        assert "modality_embeddings" in batch
-        assert "modality_attention_mask" in batch
-        assert batch["modality_embeddings"].shape[0] == 2
-        assert batch["modality_embeddings"].shape[1] == 4  # Padded to longest
-        assert batch["modality_embeddings"].shape[2] == embed_dim
-        
-        # Check attention mask
-        assert batch["modality_attention_mask"][0].sum() == 4  # All valid
-        assert batch["modality_attention_mask"][1].sum() == 2  # 2 valid, 2 padding
+        assert "graph_data" in batch
+        assert "batch" in batch
+        assert batch["graph_data"]["modality"] == "protein"
+        # Check that graph data has expected keys
+        assert "node_feat" in batch["graph_data"]["value"]
+        assert "pos" in batch["graph_data"]["value"]
+        assert "edge_index" in batch["graph_data"]["value"]
     
-    def test_collate_with_kv_embeddings(self, collator):
-        """Test collating examples with cross-attention text embeddings."""
-        embed_dim = 768
+    def test_collate_with_instr_positions(self, collator):
+        """Test collating examples with instruction positions."""
         features = [
             {
                 "input_ids": [1, 2, 3, 4, 5],
                 "attention_mask": [1, 1, 1, 1, 1],
-                "kv_embeddings": [[0.3] * embed_dim for _ in range(3)],
+                "instr_positions": [0, 1, 2],
             },
             {
                 "input_ids": [6, 7, 8],
                 "attention_mask": [1, 1, 1],
-                "kv_embeddings": [[0.4] * embed_dim for _ in range(5)],
+                "instr_positions": [0, 1, 2, 3, 4],
             },
         ]
         
         batch = collator(features)
         
-        assert "kv_embeddings" in batch
-        assert "text_attention_mask" in batch
-        assert batch["kv_embeddings"].shape[0] == 2
-        assert batch["kv_embeddings"].shape[1] == 5  # Padded to longest
-        assert batch["kv_embeddings"].shape[2] == embed_dim
+        assert "instr_positions" in batch
+        assert batch["instr_positions"].shape[0] == 2
+        assert batch["instr_positions"].shape[1] == 5  # Padded to longest
     
-    def test_collate_with_modality_positions(self, collator):
-        """Test collating examples with modality positions."""
+    def test_collate_with_patch_positions(self, collator):
+        """Test collating examples with patch positions."""
         features = [
             {
                 "input_ids": [1, 2, 3, 4, 5],
                 "attention_mask": [1, 1, 1, 1, 1],
-                "modality_positions": [1, 2, 3],
+                "patch_position": 2,
             },
             {
                 "input_ids": [6, 7, 8],
                 "attention_mask": [1, 1, 1],
-                "modality_positions": [0, 1],
+                "patch_position": 1,
             },
         ]
         
         batch = collator(features)
         
-        assert "modality_positions" in batch
-        assert batch["modality_positions"].shape[0] == 2
-        assert batch["modality_positions"].shape[1] == 3  # Padded to longest
-        
-        # Check padding value is -1
-        assert batch["modality_positions"][1, 2] == -1
+        assert "patch_positions" in batch
+        assert batch["patch_positions"].shape[0] == 2
+        assert batch["patch_positions"].shape[1] == 1  # Single position per sample
+        assert batch["patch_positions"][0, 0] == 2
+        assert batch["patch_positions"][1, 0] == 1
     
     def test_collate_mixed_examples(self, collator):
-        """Test collating examples where some have modality and some don't."""
-        embed_dim = 256
-        text_embed_dim = 768
+        """Test collating examples where some have graph data and some don't."""
+        graph_data = {
+            'modality': 'protein',
+            'value': {
+                'node_feat': [[0.1, 0.2], [0.3, 0.4]],
+                'pos': [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                'edge_index': [[0, 1]],
+            }
+        }
+        
         features = [
             {
                 "input_ids": [1, 2, 3, 4, 5],
                 "attention_mask": [1, 1, 1, 1, 1],
-                "modality_embeddings": [[0.1] * embed_dim for _ in range(3)],
-                "kv_embeddings": [[0.2] * text_embed_dim for _ in range(2)],
+                "graph_data": graph_data,
+                "patch_position": 2,
             },
             {
                 "input_ids": [6, 7, 8],
                 "attention_mask": [1, 1, 1],
-                # No modality embeddings
+                # No graph data
             },
         ]
         
         batch = collator(features)
         
         assert "input_ids" in batch
-        assert "modality_embeddings" in batch
-        assert "modality_attention_mask" in batch
-        
-        # Second example should have all padding for modality
-        assert batch["modality_attention_mask"][1].sum() == 0
+        assert "graph_data" in batch
+        assert "_graph_indices" in batch
+        # Only first example has graph data
+        assert batch["_graph_indices"] == [0]
 
 
 if __name__ == "__main__":

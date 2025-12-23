@@ -6,7 +6,7 @@ Tests:
 1. MultiModalSFTDataset with graph loading
 2. preprocess_multimodal_sft_dataset
 3. MultiModalDataCollator batching
-4. Output compatibility with MultiModalLLM
+4. Output compatibility with Octopus
 """
 
 import torch
@@ -16,8 +16,8 @@ from pathlib import Path
 
 from transformers import AutoTokenizer
 from src.data_loader import MultiModalSFTDataset, preprocess_multimodal_sft_dataset, MultiModalDataCollator
-from src.models import MultiModalLLM
-from src.models.multimodal_llm_config import SmallConfig
+from src.models import Octopus
+from src.models.octopus_config import SmallConfig
 
 
 def create_sample_jsonl(path: Path, num_samples: int = 5):
@@ -191,7 +191,7 @@ def test_collator():
 
 
 def test_model_forward():
-    """Test 4: Forward pass through MultiModalLLM."""
+    """Test 4: Forward pass through Octopus."""
     print("\n=== Test 4: Model Forward Pass ===")
     
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -225,7 +225,7 @@ def test_model_forward():
         llm_config.vocab_size = len(tokenizer)  # Use actual vocab size after adding special tokens
         llm = AutoModelForCausalLM.from_config(llm_config, attn_implementation="eager")
         
-        model = MultiModalLLM(llm_model=llm, config=SmallConfig())
+        model = Octopus(llm_model=llm, config=SmallConfig())
         model.eval()
         
         print(f"✓ Model created")

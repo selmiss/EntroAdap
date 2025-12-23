@@ -1,4 +1,4 @@
-# Multi-modal fine-tuning configuration for FAST TESTING with small Qwen2 model
+# Octopus fine-tuning configuration for FAST TESTING with small Qwen2 model
 # Model configuration
 model_name_or_path: Qwen/Qwen2-0.5B  # Small but realistic Qwen2 model (~1GB)
 
@@ -30,7 +30,7 @@ lora_dropout: 0.05
 # deepspeed: configs/deepspeed/ds_config_zero2.json
 
 # Output configuration
-output_dir: ./checkpoints/multimodal_test_tiny/Qwen2-0.5B
+output_dir: ./checkpoints/octopus_test_tiny/Qwen2-0.5B
 
 # Logging and evaluation
 logging_steps: 1  # Log every step for testing
@@ -42,7 +42,7 @@ eval_strategy: "no"
 report_to: []
 remove_unused_columns: false  # CRITICAL: Keep graph_data and multimodal columns
 
-# Multi-modal configuration - scaled for Qwen2-0.5B
+# Octopus configuration - scaled for Qwen2-0.5B
 use_custom_model: true
 modality_embedding_dim: 896  # Match Qwen2-0.5B hidden_size=896
 num_fusion_blocks: 2  # Fewer blocks for faster testing
