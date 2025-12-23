@@ -127,3 +127,8 @@ class AAEncoder(nn.Module):
             'edge_emb': embedded['edge_emb'],
             'edge_index': embedded['edge_index'],
         }
+    
+    def freeze(self):
+        """Freeze all parameters in the encoder."""
+        for param in self.parameters():
+            param.requires_grad = False

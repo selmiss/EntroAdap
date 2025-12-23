@@ -39,13 +39,14 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     log_level = training_args.get_process_log_level()
     logger.setLevel(log_level)
     datasets.utils.logging.set_verbosity(log_level)
-    transformers.utils.logging.set_verbosity(log_level)
+    # Set transformers to WARNING to reduce verbose config output
+    transformers.utils.logging.set_verbosity_warning()
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
-    logger.info(f"Model parameters {model_args}")
-    logger.info(f"Script parameters {script_args}")
-    logger.info(f"Training parameters {training_args}")
+    # logger.info(f"Model parameters {model_args}")
+    # logger.info(f"Script parameters {script_args}")
+    # logger.info(f"Training parameters {training_args}")
     if multimodal_args is not None:
         logger.info(f"Multi-modal parameters {multimodal_args}")
 

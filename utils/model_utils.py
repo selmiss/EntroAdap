@@ -59,17 +59,21 @@ def get_custom_model(
     """
     Get the custom multi-modal model.
     
-    IMPORTANT: If PEFT is enabled, it will be applied ONLY to the inner LLM model,
-    not the entire Octopus wrapper. This allows the fusion blocks and 
-    modality embeddings to be trained normally while using LoRA on the LLM.
+    IMPORTANT: 
+    - If PEFT is enabled, it will be applied ONLY to the inner LLM model,
+      not the entire Octopus wrapper. This allows the fusion blocks and 
+      modality embeddings to be trained normally while using LoRA on the LLM.
+    - Multimodal components are trainable by default after initialization.
+    - Use the freezing options in multimodal_config to selectively freeze components:
+      freeze_encoder, freeze_llm, freeze_gates, freeze_fusion_blocks, freeze_projections
     
     Args:
         model_args: Model configuration from TRL
         training_args: Training configuration
-        multimodal_config: Multi-modal specific configuration
+        multimodal_config: Multi-modal specific configuration (includes freezing options)
     
     Returns:
-        Octopus instance with the specified configuration
+        Octopus instance with the specified configuration and freezing applied
     """
     # First, load the base LLM model
     # Handle both old (torch_dtype) and new (dtype) parameter names for backward compatibility
@@ -130,8 +134,16 @@ def get_custom_model(
     # Create the multi-modal wrapper with the (possibly PEFT-wrapped) LLM
     multimodal_model = Octopus(llm_model=llm_model, config=mm_config)
     
-    # Ensure multimodal components are trainable (especially important when PEFT is used)
-    multimodal_model.enable_multimodal_training()
+    # Note: Multimodal components are trainable by default after initialization.
+    # Apply freezing configuration if specified to selectively freeze components.
+    freeze_config = {
+        'freeze_encoder': getattr(multimodal_config, 'freeze_encoder', False),
+        'freeze_llm': getattr(multimodal_config, 'freeze_llm', False),
+        'freeze_gates': getattr(multimodal_config, 'freeze_gates', False),
+        'freeze_fusion_blocks': getattr(multimodal_config, 'freeze_fusion_blocks', False),
+        'freeze_projections': getattr(multimodal_config, 'freeze_projections', False),
+    }
+    multimodal_model.apply_freezing_config(freeze_config)
     
     return multimodal_model
 

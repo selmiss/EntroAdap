@@ -104,3 +104,8 @@ class FusionBlock(nn.Module):
         hidden_states = residual + hidden_states
         
         return hidden_states
+    
+    def freeze(self):
+        """Freeze all parameters in the fusion block."""
+        for param in self.parameters():
+            param.requires_grad = False

@@ -60,12 +60,12 @@ class Octopus(PreTrainedModel):
         self.llm_hidden_dim = llm_model.config.hidden_size
         
         # Use provided config or create default
-        self.config_mm = config if config is not None else BaseConfig()
+        self.config_octopus = config if config is not None else BaseConfig()
         
         # Extract config values
-        enc_cfg = self.config_mm.encoder
-        patch_cfg = self.config_mm.patching
-        fusion_cfg = self.config_mm.fusion
+        enc_cfg = self.config_octopus.encoder
+        patch_cfg = self.config_octopus.patching
+        fusion_cfg = self.config_octopus.fusion
         
         # 1. Graph encoder
         self.encoder = AAEncoder(
@@ -199,7 +199,7 @@ class Octopus(PreTrainedModel):
         instr_emb_proj = self.instr_proj(instr_emb)  # [G, enc_dim]
         
         # Run patching with config
-        cfg = self.config_mm.patching
+        cfg = self.config_octopus.patching
         patch_out = soft_patch_grow(
             instr=instr_emb_proj,
             x=node_emb,
@@ -478,7 +478,7 @@ class Octopus(PreTrainedModel):
                 inputs_embeds = torch.cat([fused_patches[:B], inputs_embeds], dim=1)
                 
                 # Adjust masks and labels
-                k_max = self.config_mm.patching.k_max
+                k_max = self.config_octopus.patching.k_max
                 if attention_mask is not None:
                     patch_attn_mask = torch.ones(
                         (B, k_max), dtype=attention_mask.dtype, device=attention_mask.device
@@ -557,7 +557,7 @@ class Octopus(PreTrainedModel):
                 )
             else:
                 # Fallback: Concatenate at beginning
-                k_max = self.config_mm.patching.k_max
+                k_max = self.config_octopus.patching.k_max
                 inputs_embeds = torch.cat([fused_patches[:B], inputs_embeds], dim=1)
                 if attention_mask is not None:
                     patch_attn_mask = torch.ones((B, k_max), dtype=attention_mask.dtype, device=attention_mask.device)
@@ -600,7 +600,20 @@ class Octopus(PreTrainedModel):
             super().gradient_checkpointing_disable()
     
     def enable_multimodal_training(self):
-        """Ensure multimodal components are trainable (call after applying PEFT)."""
+        """
+        DEPRECATED: This method is no longer needed.
+        
+        Multimodal components are trainable by default after model initialization.
+        Use freeze_*() methods or apply_freezing_config() to selectively freeze components instead.
+        """
+        import warnings
+        warnings.warn(
+            "enable_multimodal_training() is deprecated and will be removed in a future version. "
+            "Multimodal components are trainable by default. Use freeze_*() methods to freeze components.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        # Legacy behavior: ensure all multimodal components are trainable
         trainable_modules = [
             self.encoder,
             self.instr_proj,
@@ -616,3 +629,86 @@ class Octopus(PreTrainedModel):
         for module in trainable_modules:
             for param in module.parameters():
                 param.requires_grad = True
+    
+    def freeze_encoder(self):
+        """Freeze the graph encoder."""
+        self.encoder.freeze()
+        print("Frozen encoder")
+    
+    def freeze_llm(self):
+        """Freeze the LLM."""
+        for param in self.llm_model.parameters():
+            param.requires_grad = False
+        print("Frozen LLM")
+    
+    def freeze_gates(self):
+        """Freeze anchor and edge gates."""
+        self.anchor_gate.freeze()
+        self.edge_gate.freeze()
+        print("Frozen gates (anchor_gate, edge_gate)")
+    
+    def freeze_fusion_blocks(self):
+        """Freeze all fusion blocks."""
+        for fusion_block in self.fusion_blocks:
+            fusion_block.freeze()
+        print("Frozen fusion blocks")
+    
+    def freeze_projections(self):
+        """Freeze all projection layers."""
+        projection_modules = [
+            self.instr_proj,
+            self.patch_proj,
+            self.node_proj,
+            self.output_proj,
+            self.output_norm,
+        ]
+        for module in projection_modules:
+            for param in module.parameters():
+                param.requires_grad = False
+        print("Frozen projection layers (instr_proj, patch_proj, node_proj, output_proj, output_norm)")
+    
+    def apply_freezing_config(self, freeze_config: Optional[Dict[str, bool]] = None):
+        """
+        Apply freezing configuration to model components.
+        
+        Args:
+            freeze_config: Dictionary with freezing flags:
+                - freeze_encoder: bool
+                - freeze_llm: bool
+                - freeze_gates: bool
+                - freeze_fusion_blocks: bool
+                - freeze_projections: bool
+        
+        If freeze_config is None, uses self.config_octopus freezing flags.
+        
+        This method should be called after applying PEFT to ensure proper freezing order.
+        """
+        if freeze_config is None:
+            # Try to get from OctopusConfig if it has freezing attributes
+            if hasattr(self.config_octopus, 'freeze_encoder'):
+                freeze_config = {
+                    'freeze_encoder': getattr(self.config_octopus, 'freeze_encoder', False),
+                    'freeze_llm': getattr(self.config_octopus, 'freeze_llm', False),
+                    'freeze_gates': getattr(self.config_octopus, 'freeze_gates', False),
+                    'freeze_fusion_blocks': getattr(self.config_octopus, 'freeze_fusion_blocks', False),
+                    'freeze_projections': getattr(self.config_octopus, 'freeze_projections', False),
+                }
+            else:
+                # No freezing config available
+                return
+        
+        # Apply freezing using individual freeze methods
+        if freeze_config.get('freeze_encoder', False):
+            self.freeze_encoder()
+        
+        if freeze_config.get('freeze_llm', False):
+            self.freeze_llm()
+        
+        if freeze_config.get('freeze_gates', False):
+            self.freeze_gates()
+        
+        if freeze_config.get('freeze_fusion_blocks', False):
+            self.freeze_fusion_blocks()
+        
+        if freeze_config.get('freeze_projections', False):
+            self.freeze_projections()

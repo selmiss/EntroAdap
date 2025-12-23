@@ -81,6 +81,28 @@ class OctopusConfig:
         default=256,
         metadata={"help": "Maximum sequence length for multimodal training."}
     )
+    
+    # Freezing options for training
+    freeze_encoder: bool = field(
+        default=False,
+        metadata={"help": "Whether to freeze the graph encoder during training."}
+    )
+    freeze_llm: bool = field(
+        default=False,
+        metadata={"help": "Whether to freeze the LLM during training."}
+    )
+    freeze_gates: bool = field(
+        default=False,
+        metadata={"help": "Whether to freeze the anchor and edge gates during training."}
+    )
+    freeze_fusion_blocks: bool = field(
+        default=False,
+        metadata={"help": "Whether to freeze the fusion blocks during training."}
+    )
+    freeze_projections: bool = field(
+        default=False,
+        metadata={"help": "Whether to freeze all projection layers (instr_proj, patch_proj, node_proj, output_proj) during training."}
+    )
 
 
 @dataclass

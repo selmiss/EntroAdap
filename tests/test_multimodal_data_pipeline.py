@@ -252,7 +252,7 @@ def test_model_forward():
         
         # Verify output shape
         # Note: Sequence length increases by k_max patches
-        k_max = model.config_mm.patching.k_max
+        k_max = model.config_octopus.patching.k_max
         expected_seq_len = batch['input_ids'].shape[1] + k_max
         assert outputs.logits.shape == (2, expected_seq_len, len(tokenizer))
         print(f"  Expected seq len (with patches): {expected_seq_len}")

@@ -97,8 +97,8 @@ class TestOctopusIntegrated:
         assert multimodal_model.anchor_gate is not None
         assert multimodal_model.edge_gate is not None
         assert len(multimodal_model.fusion_blocks) == 2
-        assert multimodal_model.config_mm.patching.k_max == 8
-        assert multimodal_model.config_mm.encoder.hidden_dim == 128
+        assert multimodal_model.config_octopus.patching.k_max == 8
+        assert multimodal_model.config_octopus.encoder.hidden_dim == 128
     
     def test_initialization_with_config(self, multimodal_model_config):
         """Test model initialization with config object."""
@@ -106,21 +106,21 @@ class TestOctopusIntegrated:
         assert multimodal_model_config.anchor_gate is not None
         assert multimodal_model_config.edge_gate is not None
         assert len(multimodal_model_config.fusion_blocks) == 2
-        assert multimodal_model_config.config_mm.patching.k_max == 8
-        assert multimodal_model_config.config_mm.encoder.hidden_dim == 128
+        assert multimodal_model_config.config_octopus.patching.k_max == 8
+        assert multimodal_model_config.config_octopus.encoder.hidden_dim == 128
     
     def test_initialization_with_preset_config(self, small_llm):
         """Test model initialization with preset config."""
         model = Octopus(llm_model=small_llm, config=SmallConfig())
         assert model.encoder is not None
-        assert model.config_mm.patching.k_max == 16  # SmallConfig default
-        assert model.config_mm.encoder.hidden_dim == 128  # SmallConfig default
+        assert model.config_octopus.patching.k_max == 16  # SmallConfig default
+        assert model.config_octopus.encoder.hidden_dim == 128  # SmallConfig default
     
     def test_config_override(self, small_llm):
         """Test that individual params override config."""
         config = SmallConfig()  # k_max=16 by default
         model = Octopus(llm_model=small_llm, config=config, k_max=24)
-        assert model.config_mm.patching.k_max == 16  # Config not overridden (removed legacy support)
+        assert model.config_octopus.patching.k_max == 16  # Config not overridden (removed legacy support)
     
     def test_forward_text_only(self, multimodal_model):
         """Test forward with text only (no graph)."""
@@ -154,8 +154,8 @@ class TestOctopusIntegrated:
             graph_data, instr_emb, batch
         )
         
-        k_max = multimodal_model.config_mm.patching.k_max
-        enc_dim = multimodal_model.config_mm.encoder.hidden_dim
+        k_max = multimodal_model.config_octopus.patching.k_max
+        enc_dim = multimodal_model.config_octopus.encoder.hidden_dim
         assert patch_emb.shape == (G, k_max, enc_dim)
         assert patch_mask.shape == (G, k_max)
         assert node_emb.shape == (N, enc_dim)
@@ -182,8 +182,8 @@ class TestOctopusIntegrated:
             graph_data, instr_emb, batch
         )
         
-        k_max = multimodal_model.config_mm.patching.k_max
-        enc_dim = multimodal_model.config_mm.encoder.hidden_dim
+        k_max = multimodal_model.config_octopus.patching.k_max
+        enc_dim = multimodal_model.config_octopus.encoder.hidden_dim
         assert patch_emb.shape == (G, k_max, enc_dim)
         assert patch_mask.shape == (G, k_max)
         assert node_emb.shape == (N, enc_dim)
@@ -191,8 +191,8 @@ class TestOctopusIntegrated:
     def test_fuse_patches_with_nodes(self, multimodal_model):
         """Test fusion of patches with nodes."""
         G, N = 2, 20
-        k_max = multimodal_model.config_mm.patching.k_max
-        enc_dim = multimodal_model.config_mm.encoder.hidden_dim
+        k_max = multimodal_model.config_octopus.patching.k_max
+        enc_dim = multimodal_model.config_octopus.encoder.hidden_dim
         
         patch_emb = torch.randn(G, k_max, enc_dim)
         node_emb = torch.randn(N, enc_dim)
@@ -233,7 +233,7 @@ class TestOctopusIntegrated:
         )
         
         # Patches concatenated at start
-        k_max = multimodal_model.config_mm.patching.k_max
+        k_max = multimodal_model.config_octopus.patching.k_max
         expected_len = seq_len + k_max
         assert outputs.logits.shape == (B, expected_len, 1000)
     
@@ -259,7 +259,7 @@ class TestOctopusIntegrated:
         
         # OLD API: Inject patches at specific positions (replaced k_max positions)
         # This is deprecated in favor of new INSERT-based injection
-        k_max = multimodal_model.config_mm.patching.k_max
+        k_max = multimodal_model.config_octopus.patching.k_max
         patch_positions = torch.full((B, k_max), -1, dtype=torch.long)
         patch_positions[0, :3] = torch.tensor([5, 6, 7])
         patch_positions[1, :3] = torch.tensor([10, 11, 12])
@@ -299,7 +299,7 @@ class TestOctopusIntegrated:
         )
         
         # With INSERT, sequence length increases by k_max
-        k_max = multimodal_model.config_mm.patching.k_max
+        k_max = multimodal_model.config_octopus.patching.k_max
         expected_len = seq_len + k_max
         assert outputs.logits.shape == (B, expected_len, 1000)
     
@@ -374,7 +374,7 @@ class TestOctopusIntegrated:
     def test_dimension_consistency(self, multimodal_model):
         """Verify all dimensions are consistent across pipeline."""
         # Check encoder output -> patching input
-        enc_dim = multimodal_model.config_mm.encoder.hidden_dim
+        enc_dim = multimodal_model.config_octopus.encoder.hidden_dim
         llm_dim = multimodal_model.llm_hidden_dim
         assert multimodal_model.encoder.hidden_dim == enc_dim
         
@@ -391,20 +391,25 @@ class TestOctopusIntegrated:
         # Check fusion output -> LLM input
         assert multimodal_model.output_proj.out_features == multimodal_model.llm_hidden_dim
     
-    def test_enable_multimodal_training(self, multimodal_model):
-        """Test enable_multimodal_training method."""
-        # Freeze all params
-        for param in multimodal_model.parameters():
-            param.requires_grad = False
+    def test_freeze_methods(self, multimodal_model):
+        """Test freeze methods for individual components."""
+        # Test freeze_encoder
+        multimodal_model.freeze_encoder()
+        assert all(not p.requires_grad for p in multimodal_model.encoder.parameters())
         
-        # Enable multimodal training
-        multimodal_model.enable_multimodal_training()
+        # Test freeze_gates
+        multimodal_model.freeze_gates()
+        assert all(not p.requires_grad for p in multimodal_model.anchor_gate.parameters())
+        assert all(not p.requires_grad for p in multimodal_model.edge_gate.parameters())
         
-        # Check multimodal components are trainable
-        assert all(p.requires_grad for p in multimodal_model.encoder.parameters())
-        assert all(p.requires_grad for p in multimodal_model.anchor_gate.parameters())
-        assert all(p.requires_grad for p in multimodal_model.edge_gate.parameters())
-        assert all(p.requires_grad for p in multimodal_model.fusion_blocks.parameters())
+        # Test freeze_fusion_blocks
+        multimodal_model.freeze_fusion_blocks()
+        assert all(not p.requires_grad for p in multimodal_model.fusion_blocks.parameters())
+        
+        # Test freeze_projections
+        multimodal_model.freeze_projections()
+        assert all(not p.requires_grad for p in multimodal_model.instr_proj.parameters())
+        assert all(not p.requires_grad for p in multimodal_model.output_proj.parameters())
     
     def test_gradient_flow(self, multimodal_model):
         """Test that gradients flow through all components."""

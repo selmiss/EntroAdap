@@ -37,6 +37,11 @@ class AnchorGate(nn.Module):
         u = instr[batch]                              # [N, Di]
         h = torch.cat([x, u], dim=-1)                 # [N, D+Di]
         return self.net(h).squeeze(-1)                # [N]
+    
+    def freeze(self):
+        """Freeze all parameters in the anchor gate."""
+        for param in self.parameters():
+            param.requires_grad = False
 
 
 class EdgeGate(nn.Module):
@@ -82,6 +87,11 @@ class EdgeGate(nn.Module):
             parts.append(edge_attr)
         h = torch.cat(parts, dim=-1)                  # [E, ...]
         return self.net(h).squeeze(-1)                # [E]
+    
+    def freeze(self):
+        """Freeze all parameters in the edge gate."""
+        for param in self.parameters():
+            param.requires_grad = False
 
 
 @dataclass

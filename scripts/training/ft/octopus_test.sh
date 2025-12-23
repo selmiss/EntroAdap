@@ -9,7 +9,7 @@ GPU_IDS=7
 export MASTER_PORT=29500
 
 # Load configuration from YAML file
-CONFIG_FILE="configs/sft/octopus_test/octopus_test_tiny.yaml"
+CONFIG_FILE="configs/sft/octopus/octopus_test_tiny.yaml"
 
 deepspeed --include localhost:${GPU_IDS} --master_port ${MASTER_PORT} src/runner/sft.py \
     --config ${CONFIG_FILE}

@@ -224,7 +224,7 @@ class TestPatchInjection:
         )
         
         # Output sequence should be seq_len + k_max
-        k_max = multimodal_model.config_mm.patching.k_max
+        k_max = multimodal_model.config_octopus.patching.k_max
         expected_len = seq_len + k_max
         assert outputs.logits.shape == (B, expected_len, 1000)
     
@@ -264,7 +264,7 @@ class TestPatchInjection:
         assert outputs.loss.item() > 0
         
         # Logits shape should include patches
-        k_max = multimodal_model.config_mm.patching.k_max
+        k_max = multimodal_model.config_octopus.patching.k_max
         expected_len = seq_len + k_max
         assert outputs.logits.shape == (B, expected_len, 1000)
     
@@ -298,7 +298,7 @@ class TestPatchInjection:
         )
         
         # Should still concatenate patches at start
-        k_max = multimodal_model.config_mm.patching.k_max
+        k_max = multimodal_model.config_octopus.patching.k_max
         expected_len = seq_len + k_max
         assert outputs.logits.shape == (B, expected_len, 1000)
     
