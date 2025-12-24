@@ -324,13 +324,13 @@ def generate_2d_3d_from_smiles(smiles: str) -> Tuple[Optional[List[str]], Option
             
             # Configure conformer generation parameters
             num_threads = int(os.environ.get('RDKIT_NUM_THREADS', '16'))
-            params = AllChem.ETKDGv3()
+            params = AllChem.ETKDGv2()
             params.numThreads = num_threads
             # Note: maxAttempts not available in all RDKit versions
             # params.maxAttempts = 2000
             
             # Generate conformer
-            conf_ids = AllChem.EmbedMultipleConfs(mol_3d, numConfs=5, params=params)
+            conf_ids = AllChem.EmbedMultipleConfs(mol_3d, numConfs=2, params=params)
             
             if len(conf_ids) == 0:
                 print(f"3D conformer embedding failed for {smiles}")
