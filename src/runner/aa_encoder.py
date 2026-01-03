@@ -13,11 +13,11 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 from pathlib import Path
 from datetime import datetime
-from transformers import TrainingArguments, Trainer, HfArgumentParser
+from transformers import TrainingArguments, Trainer, HfArgumentParser, TrainerCallback
 
 from src.models.aa_encoder import AAEncoder
 from src.trainer.reconstruction import ReconstructionTrainer
-from src.data_loader.aa_dataset import GraphDataset, GraphBatchCollator
+from src.data_loader.aa_dataset import GraphDataset, GraphBatchCollator, ModalityAwareBatchSampler
 
 try:
     import wandb
@@ -60,10 +60,28 @@ class ModelArguments:
 class DataArguments:
     """Arguments for data loading."""
     
-    train_data_path: Optional[str] = field(default=None, metadata={"help": "Path to training parquet file"})
-    val_data_path: Optional[str] = field(default=None, metadata={"help": "Path to validation parquet file"})
+    train_data_path: Optional[str] = field(
+        default=None, 
+        metadata={"help": "Path(s) to training parquet file(s). Supports: single path, comma-separated paths, or list in YAML config"}
+    )
+    val_data_path: Optional[str] = field(
+        default=None, 
+        metadata={"help": "Path(s) to validation parquet file(s). Supports: single path, comma-separated paths, or list in YAML config"}
+    )
     val_split_ratio: float = field(default=0.1, metadata={"help": "Validation split ratio when auto-splitting"})
+    stratified_val_split: bool = field(
+        default=True,
+        metadata={"help": "Use stratified validation split (each dataset contributes proportionally to val set)"}
+    )
     cache_dir: Optional[str] = field(default=None, metadata={"help": "Cache directory for datasets"})
+    use_modality_sampler: bool = field(
+        default=True, 
+        metadata={"help": "Use modality-aware batch sampler to ensure same-modality batches (required for multi-modality datasets)"}
+    )
+    max_samples_per_dataset: Optional[str] = field(
+        default=None,
+        metadata={"help": "Max samples per dataset. Can be: single int (applies to all), comma-separated ints, or list in YAML"}
+    )
     
     # Masking parameters
     node_mask_prob: float = field(default=0.15, metadata={"help": "Node masking probability"})
@@ -81,7 +99,7 @@ class ScriptArguments:
         metadata={"help": "Path to YAML config file. If provided, will override other arguments."}
     )
     wandb_project: Optional[str] = field(
-        default="EntroAdap-Reconstruction",
+        default=None,
         metadata={"help": "Wandb project name"}
     )
     wandb_entity: Optional[str] = field(
@@ -98,12 +116,127 @@ class ScriptArguments:
     )
 
 
+class LossLoggingCallback(TrainerCallback):
+    """
+    Callback to log individual loss components during training and evaluation.
+    
+    This properly handles gradient accumulation by only logging after the optimizer step.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.accumulated_train_losses = {'element': [], 'dist': [], 'noise': []}
+    
+    def on_step_end(self, args, state, control, **kwargs):
+        """Called after each training step (after gradient accumulation and optimizer step)."""
+        # Log accumulated losses if we have any
+        if any(self.accumulated_train_losses.values()):
+            log_dict = {}
+            if self.accumulated_train_losses['element']:
+                log_dict['train_element_loss'] = sum(self.accumulated_train_losses['element']) / len(self.accumulated_train_losses['element'])
+            if self.accumulated_train_losses['dist']:
+                log_dict['train_dist_loss'] = sum(self.accumulated_train_losses['dist']) / len(self.accumulated_train_losses['dist'])
+            if self.accumulated_train_losses['noise']:
+                log_dict['train_noise_loss'] = sum(self.accumulated_train_losses['noise']) / len(self.accumulated_train_losses['noise'])
+            
+            # Log to wandb/tensorboard via the trainer
+            if log_dict and kwargs.get('logs') is not None:
+                kwargs['logs'].update(log_dict)
+            
+            # Clear accumulated losses
+            self.accumulated_train_losses = {'element': [], 'dist': [], 'noise': []}
+    
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Called when logging (respects logging_steps)."""
+        # This is where we can add custom metrics to logs
+        pass
+    
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Called after evaluation."""
+        if metrics:
+            # Log evaluation losses with proper prefixes
+            logger.info(f"Evaluation at step {state.global_step}:")
+            for key, value in metrics.items():
+                if 'eval_loss' in key or 'eval' in key:
+                    logger.info(f"  {key}: {value}")
+
+
 class ReconstructionTrainerWrapper(Trainer):
     """
     Custom Trainer wrapper for masked reconstruction.
     
     Handles the specific forward pass and loss computation for graph reconstruction.
+    Supports modality-aware batch sampling for mixed-modality training.
     """
+    
+    def __init__(self, *args, use_modality_sampler=False, **kwargs):
+        """
+        Args:
+            use_modality_sampler: Whether to use ModalityAwareBatchSampler
+        """
+        self.use_modality_sampler = use_modality_sampler
+        # Track individual losses for logging (accumulated across gradient accumulation steps)
+        self.accumulated_losses = {'element': [], 'dist': [], 'noise': []}
+        super().__init__(*args, **kwargs)
+    
+    def get_train_dataloader(self):
+        """
+        Returns the training DataLoader with optional modality-aware batch sampler.
+        """
+        if self.use_modality_sampler:
+            from torch.utils.data import DataLoader
+            
+            # Create modality-aware batch sampler
+            batch_sampler = ModalityAwareBatchSampler(
+                dataset=self.train_dataset,
+                batch_size=self.args.per_device_train_batch_size,
+                shuffle=True,
+                seed=self.args.seed,
+                drop_last=self.args.dataloader_drop_last,
+            )
+            
+            # Create DataLoader with batch_sampler
+            # Note: when using batch_sampler, we can't specify batch_size, shuffle, or drop_last
+            return DataLoader(
+                self.train_dataset,
+                batch_sampler=batch_sampler,
+                collate_fn=self.data_collator,
+                num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.dataloader_pin_memory,
+            )
+        else:
+            # Use default behavior
+            return super().get_train_dataloader()
+    
+    def get_eval_dataloader(self, eval_dataset=None):
+        """
+        Returns the evaluation DataLoader with optional modality-aware batch sampler.
+        """
+        if eval_dataset is None:
+            eval_dataset = self.eval_dataset
+        
+        if self.use_modality_sampler and eval_dataset is not None:
+            from torch.utils.data import DataLoader
+            
+            # Create modality-aware batch sampler (no shuffle for eval)
+            batch_sampler = ModalityAwareBatchSampler(
+                dataset=eval_dataset,
+                batch_size=self.args.per_device_eval_batch_size,
+                shuffle=False,
+                seed=self.args.seed,
+                drop_last=self.args.dataloader_drop_last,
+            )
+            
+            return DataLoader(
+                eval_dataset,
+                batch_sampler=batch_sampler,
+                collate_fn=self.data_collator,
+                num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.dataloader_pin_memory,
+            )
+        else:
+            # Use default behavior
+            return super().get_eval_dataloader(eval_dataset)
     
     def _move_to_device(self, data, device):
         """
@@ -166,19 +299,76 @@ class ReconstructionTrainerWrapper(Trainer):
         
         loss = outputs['loss']
         
-        # Log individual losses
-        if self.args.logging_steps > 0 and self.state.global_step % self.args.logging_steps == 0:
-            log_dict = {}
+        # Accumulate individual losses during training (for logging after gradient accumulation)
+        if model.training:
             if 'element_loss' in outputs:
-                log_dict['element_loss'] = outputs['element_loss'].item()
+                self.accumulated_losses['element'].append(outputs['element_loss'].item())
             if 'dist_loss' in outputs:
-                log_dict['dist_loss'] = outputs['dist_loss'].item()
+                self.accumulated_losses['dist'].append(outputs['dist_loss'].item())
             if 'noise_loss' in outputs:
-                log_dict['noise_loss'] = outputs['noise_loss'].item()
-            if log_dict:
-                self.log(log_dict)
+                self.accumulated_losses['noise'].append(outputs['noise_loss'].item())
         
         return (loss, outputs) if return_outputs else loss
+    
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+        """
+        Override evaluate to add individual loss logging.
+        """
+        # Get eval dataloader
+        if eval_dataset is None:
+            eval_dataset = self.eval_dataset
+        
+        if eval_dataset is None:
+            return {}
+        
+        # Run parent evaluation
+        metrics = super().evaluate(eval_dataset=eval_dataset, ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix)
+        
+        # Manually compute individual losses
+        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+        model = self.model
+        model.eval()
+        
+        element_losses = []
+        dist_losses = []
+        noise_losses = []
+        
+        with torch.no_grad():
+            for inputs in eval_dataloader:
+                # Compute loss with outputs
+                _, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                
+                if 'element_loss' in outputs:
+                    element_losses.append(outputs['element_loss'].item())
+                if 'dist_loss' in outputs:
+                    dist_losses.append(outputs['dist_loss'].item())
+                if 'noise_loss' in outputs:
+                    noise_losses.append(outputs['noise_loss'].item())
+        
+        # Add individual loss metrics
+        if element_losses:
+            metrics[f'{metric_key_prefix}_element_loss'] = sum(element_losses) / len(element_losses)
+            metrics[f'{metric_key_prefix}_dist_loss'] = sum(dist_losses) / len(dist_losses)
+            metrics[f'{metric_key_prefix}_noise_loss'] = sum(noise_losses) / len(noise_losses)
+        
+        return metrics
+    
+    def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
+        """
+        Override log method to add accumulated individual losses.
+        This is called by Trainer after gradient accumulation is complete.
+        """
+        # Add accumulated losses to logs if we have any (check if in training by looking at accumulated losses)
+        if self.accumulated_losses['element']:
+            logs['train_element_loss'] = sum(self.accumulated_losses['element']) / len(self.accumulated_losses['element'])
+            logs['train_dist_loss'] = sum(self.accumulated_losses['dist']) / len(self.accumulated_losses['dist'])
+            logs['train_noise_loss'] = sum(self.accumulated_losses['noise']) / len(self.accumulated_losses['noise'])
+            
+            # Clear accumulated losses after logging
+            self.accumulated_losses = {'element': [], 'dist': [], 'noise': []}
+        
+        # Call parent log method with exact signature
+        super().log(logs, start_time)
 
 
 def load_config_from_yaml(config_path: str) -> Dict[str, Any]:
@@ -255,6 +445,7 @@ def setup_wandb(config: Dict[str, Any], script_args: ScriptArguments, training_a
     
     project = script_args.wandb_project or wandb_config.get('project', 'EntroAdap-Reconstruction')
     entity = script_args.wandb_entity or wandb_config.get('entity', None)
+    mode = wandb_config.get('mode', 'online')  # Default to online if not specified
     tags = script_args.wandb_tags.split(',') if script_args.wandb_tags else wandb_config.get('tags', [])
     notes = script_args.wandb_notes or wandb_config.get('notes', None)
     
@@ -263,6 +454,8 @@ def setup_wandb(config: Dict[str, Any], script_args: ScriptArguments, training_a
         os.environ['WANDB_PROJECT'] = project
     if entity:
         os.environ['WANDB_ENTITY'] = entity
+    if mode:
+        os.environ['WANDB_MODE'] = mode
     if tags:
         os.environ['WANDB_TAGS'] = ','.join(tags)
     if notes:
@@ -272,7 +465,7 @@ def setup_wandb(config: Dict[str, Any], script_args: ScriptArguments, training_a
     if 'wandb' not in training_args.report_to:
         training_args.report_to = ['wandb']
     
-    logger.info(f"Wandb reporting enabled: project={project}, entity={entity}, tags={tags}")
+    logger.info(f"Wandb reporting enabled: project={project}, entity={entity}, mode={mode}, tags={tags}")
 
 
 def main():
@@ -335,6 +528,18 @@ def main():
         noise_weight=model_args.noise_weight,
     )
     
+    # Parse max_samples_per_dataset
+    max_samples_list = None
+    if data_args.max_samples_per_dataset is not None:
+        if isinstance(data_args.max_samples_per_dataset, str):
+            # Parse comma-separated string
+            max_samples_list = [
+                int(x.strip()) if x.strip().lower() != 'none' else None 
+                for x in data_args.max_samples_per_dataset.split(',')
+            ]
+        elif isinstance(data_args.max_samples_per_dataset, (int, list)):
+            max_samples_list = data_args.max_samples_per_dataset
+    
     # Create datasets
     logger.info("Loading datasets...")
     
@@ -345,6 +550,7 @@ def main():
             dataset_path=data_args.train_data_path,
             split='train',
             cache_dir=data_args.cache_dir,
+            max_samples_per_dataset=max_samples_list,
         )
         
         logger.info(f"Loading validation data from {data_args.val_data_path}")
@@ -352,33 +558,104 @@ def main():
             dataset_path=data_args.val_data_path,
             split='validation',
             cache_dir=data_args.cache_dir,
+            max_samples_per_dataset=max_samples_list,
         )
     else:
         # Auto-split validation set from training data
-        logger.info(f"Loading data from {data_args.train_data_path}")
         logger.info(f"Auto-splitting validation set with ratio {data_args.val_split_ratio}")
         
-        # Load full dataset
-        full_dataset = GraphDataset(
-            dataset_path=data_args.train_data_path,
-            split='train',
-            cache_dir=data_args.cache_dir,
+        # Check if using stratified split for multi-dataset training
+        is_multi_dataset = isinstance(data_args.train_data_path, list) or (
+            isinstance(data_args.train_data_path, str) and ',' in data_args.train_data_path
         )
         
-        # Split into train and validation
-        total_size = len(full_dataset)
-        val_size = int(total_size * data_args.val_split_ratio)
-        train_size = total_size - val_size
-        
-        # Use torch.utils.data.random_split for deterministic splitting with seed
-        generator = torch.Generator().manual_seed(training_args.seed)
-        train_dataset, eval_dataset = torch.utils.data.random_split(
-            full_dataset,
-            [train_size, val_size],
-            generator=generator,
-        )
-        
-        logger.info(f"Split dataset: {train_size} train samples, {val_size} validation samples")
+        if is_multi_dataset and data_args.stratified_val_split:
+            logger.info("Using stratified validation split (proportional sampling from each dataset)")
+            
+            # Load full concatenated dataset with max_samples applied
+            # This uses cache and only loads once
+            full_dataset = GraphDataset(
+                dataset_path=data_args.train_data_path,
+                split='train',
+                cache_dir=data_args.cache_dir,
+                max_samples_per_dataset=max_samples_list,
+            )
+            
+            # Get the underlying HF dataset
+            hf_dataset = full_dataset.dataset
+            
+            # Group indices by modality for stratified split
+            print("\n" + "="*80)
+            print("Creating Stratified Train/Val Split:")
+            print("="*80)
+            
+            modality_indices = {}
+            print("Grouping samples by modality...")
+            
+            # OPTIMIZED: Bulk read all modalities at once (much faster than per-sample access)
+            all_modalities = hf_dataset['modality']
+            for idx, modality in enumerate(all_modalities):
+                if modality not in modality_indices:
+                    modality_indices[modality] = []
+                modality_indices[modality].append(idx)
+            
+            # Split each modality proportionally
+            train_indices = []
+            eval_indices = []
+            
+            for modality, indices in modality_indices.items():
+                total_size = len(indices)
+                val_size = int(total_size * data_args.val_split_ratio)
+                train_size = total_size - val_size
+                
+                # Shuffle with seed for reproducibility
+                generator = torch.Generator().manual_seed(training_args.seed)
+                shuffled_indices = torch.randperm(total_size, generator=generator).tolist()
+                
+                # Split indices
+                train_modal_indices = [indices[i] for i in shuffled_indices[:train_size]]
+                eval_modal_indices = [indices[i] for i in shuffled_indices[train_size:]]
+                
+                train_indices.extend(train_modal_indices)
+                eval_indices.extend(eval_modal_indices)
+                
+                print(f"  {modality}: {total_size:,} total → Train: {train_size:,} | Val: {val_size:,}")
+            
+            # Create subset datasets using indices
+            from torch.utils.data import Subset
+            train_dataset = Subset(full_dataset, train_indices)
+            eval_dataset = Subset(full_dataset, eval_indices)
+            
+            print("-" * 80)
+            print(f"Total Train: {len(train_dataset):,} samples | Total Val: {len(eval_dataset):,} samples")
+            print("="*80 + "\n")
+            
+        else:
+            # Original non-stratified split
+            logger.info("Using simple random split (non-stratified)")
+            
+            # Load full dataset
+            full_dataset = GraphDataset(
+                dataset_path=data_args.train_data_path,
+                split='train',
+                cache_dir=data_args.cache_dir,
+                max_samples_per_dataset=max_samples_list,
+            )
+            
+            # Split into train and validation
+            total_size = len(full_dataset)
+            val_size = int(total_size * data_args.val_split_ratio)
+            train_size = total_size - val_size
+            
+            # Use torch.utils.data.random_split for deterministic splitting with seed
+            generator = torch.Generator().manual_seed(training_args.seed)
+            train_dataset, eval_dataset = torch.utils.data.random_split(
+                full_dataset,
+                [train_size, val_size],
+                generator=generator,
+            )
+            
+            logger.info(f"Split dataset: {train_size} train samples, {val_size} validation samples")
     
     # Create collator
     collator = GraphBatchCollator(
@@ -393,17 +670,36 @@ def main():
     
     # Create trainer
     logger.info("Creating trainer...")
+    
+    # Create loss logging callback
+    loss_callback = LossLoggingCallback()
+    
     trainer = ReconstructionTrainerWrapper(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=collator,
+        use_modality_sampler=data_args.use_modality_sampler,
+        callbacks=[loss_callback],
     )
     
     # Train
     logger.info("Starting training...")
     trainer.train()
+    
+    # Evaluate
+    if eval_dataset is not None:
+        logger.info("Running final evaluation...")
+        eval_results = trainer.evaluate()
+        logger.info(f"Evaluation results: {eval_results}")
+        
+        # Save evaluation results
+        import json
+        eval_output_path = os.path.join(training_args.output_dir, "eval_results.json")
+        with open(eval_output_path, 'w') as f:
+            json.dump(eval_results, f, indent=2)
+        logger.info(f"Evaluation results saved to {eval_output_path}")
     
     # Save final model
     logger.info(f"Saving model to {training_args.output_dir}...")

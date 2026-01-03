@@ -55,6 +55,54 @@ def merge_protein_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str, tor
     return merged
 
 
+def merge_nucleic_acid_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    """
+    Merge nucleic acid (DNA/RNA) graphs into a batch.
+    
+    Similar to protein graph merging (both use distance-based edges only).
+    
+    Args:
+        graphs: List of nucleic acid graph dictionaries
+    
+    Returns:
+        Merged batch dictionary with node offset applied
+    """
+    batch_node_feat = []
+    batch_edge_index = []
+    batch_edge_attr = []
+    batch_pos = []
+    batch_indices = []
+    
+    node_offset = 0
+    for graph_idx, g in enumerate(graphs):
+        num_nodes = g['node_feat'].size(0)
+        
+        batch_node_feat.append(g['node_feat'])
+        batch_pos.append(g['pos'])
+        batch_indices.extend([graph_idx] * num_nodes)
+        
+        # Offset edge indices
+        edge_index = g['edge_index'] + node_offset
+        batch_edge_index.append(edge_index)
+        
+        if 'edge_attr' in g:
+            batch_edge_attr.append(g['edge_attr'])
+        
+        node_offset += num_nodes
+    
+    merged = {
+        'node_feat': torch.cat(batch_node_feat, dim=0),
+        'pos': torch.cat(batch_pos, dim=0),
+        'edge_index': torch.cat(batch_edge_index, dim=1),
+        'batch': torch.tensor(batch_indices, dtype=torch.long),
+    }
+    
+    if batch_edge_attr:
+        merged['edge_attr'] = torch.cat(batch_edge_attr, dim=0)
+    
+    return merged
+
+
 def merge_molecule_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """
     Merge molecule graphs into a batch.

@@ -23,10 +23,10 @@ model:
 
 # Data configuration
 data:
-  train_data_path: ./data/encoder/test/protein.parquet
-  val_data_path: null  # Will auto-split from train_data if null
+  train_data_path: ./data/encoder/molecules/train.parquet
+  val_data_path: ./data/encoder/molecules/val.parquet
   val_split_ratio: 0.1  # Validation split ratio when auto-splitting
-  cache_dir: null
+  cache_dir: ./data/.cache
   
   # Masking parameters
   node_mask_prob: 0.15
@@ -36,23 +36,23 @@ data:
 
 # Training configuration
 training:
-  output_dir: ./checkpoints/masked_reconstruction
-  per_device_train_batch_size: 1
-  per_device_eval_batch_size: 1
+  output_dir: ./checkpoints/aa_encoder
+  per_device_train_batch_size: 128
+  per_device_eval_batch_size: 128
   learning_rate: 1.0e-4
-  num_train_epochs: 10
-  warmup_steps: 1000
+  num_train_epochs: 5
+  warmup_steps: 500
   
   # Logging and saving
-  logging_steps: 2
-  save_steps: 1000
-  eval_steps: 1000
+  logging_steps: 50
+  save_steps: 10000
+  eval_steps: 2000
   evaluation_strategy: steps
   save_strategy: steps
   load_best_model_at_end: true
   metric_for_best_model: eval_loss
   greater_is_better: false
-  save_total_limit: 3
+  save_total_limit: 2
   
   # Optimization
   fp16: true
@@ -83,8 +83,8 @@ training:
 
 # Wandb configuration
 wandb:
-  project: EntroAdap-Reconstruction
+  project: AAEncoder
   entity: null  # Set to your wandb entity/team name
-  tags: [masked_reconstruction, pretraining, graph_encoder]
-  notes: Masked reconstruction pre-training for graph encoder
+  tags: [aa_encoder, pretraining, graph_encoder]
+  notes: AA encoder pre-training for graph encoder
 

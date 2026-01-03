@@ -8,53 +8,131 @@ This module provides:
 """
 
 import torch
-from torch.utils.data import Dataset
-from datasets import load_dataset
-from typing import Dict, Any, List, Optional
+from torch.utils.data import Dataset, Sampler
+from datasets import load_dataset, concatenate_datasets
+from typing import Dict, Any, List, Optional, Union
+import random
 
-from .graph_batch_utils import merge_protein_graphs, merge_molecule_graphs, bfs_patch_masking
+from .graph_batch_utils import merge_protein_graphs, merge_molecule_graphs, merge_nucleic_acid_graphs, bfs_patch_masking
 
 
 class GraphDataset(Dataset):
     """
     Dataset for loading graph structures from HuggingFace parquet format.
     
+    Supports loading single or multiple parquet files. When multiple files are provided,
+    they are concatenated into a single dataset, allowing mixed-modality training.
+    
     Expected parquet schema:
-        - modality: str ('protein' or 'molecule')
+        - modality: str ('protein', 'molecule', 'dna', or 'rna')
         - node_feat: List[List[int/float]] - node features
         - edge_index: List[List[int]] - [2, E] edge connectivity
         - pos: List[List[float]] - [N, 3] coordinates
-        - edge_attr: List[float] - edge attributes (for protein)
+        - edge_attr: List[float] - edge attributes (for protein and nucleic acids)
         - chem_edge_index: List[List[int]] - chemical edges (for molecule)
         - chem_edge_feat_cat: List[List[int]] - chemical edge features (for molecule)
         - edge_feat_dist: List[float] - spatial edge distances (for molecule)
     
     Args:
-        dataset_path: Path to parquet file or HF dataset
+        dataset_path: Path(s) to parquet file(s). Can be:
+            - Single string path
+            - List of paths
+            - Comma-separated string paths
         split: Dataset split ('train', 'validation', 'test')
         cache_dir: Optional cache directory for HF datasets
+        max_samples_per_dataset: Optional list of max samples for each dataset.
+            If provided, must match the number of datasets. None means no limit.
+        stratified_val_ratio: If provided, will create a stratified validation split
+            where each dataset contributes proportionally. Only used when creating val splits.
     """
     
     def __init__(
         self,
-        dataset_path: str,
+        dataset_path: Union[str, List[str]],
         split: str = 'train',
         cache_dir: Optional[str] = None,
+        max_samples_per_dataset: Optional[Union[int, List[Optional[int]]]] = None,
+        stratified_val_ratio: Optional[float] = None,
     ):
-        # When loading from a single parquet file, HF datasets exposes it as 'train' split
-        # To avoid "Unknown split" errors, we load without split specification first
-        dataset = load_dataset(
-            'parquet',
-            data_files=dataset_path,
-            cache_dir=cache_dir,
-        )
-        # The dataset will be a DatasetDict; extract the actual split
-        # Single file -> exposed as 'train' split
-        if 'train' in dataset:
-            self.dataset = dataset['train']
+        # Handle different input formats
+        if isinstance(dataset_path, str):
+            # Check if comma-separated paths
+            if ',' in dataset_path:
+                dataset_paths = [p.strip() for p in dataset_path.split(',')]
+            else:
+                dataset_paths = [dataset_path]
         else:
-            # If somehow structured differently, take the first available split
-            self.dataset = dataset[list(dataset.keys())[0]]
+            dataset_paths = dataset_path
+        
+        # Handle max_samples_per_dataset
+        if max_samples_per_dataset is None:
+            max_samples_list = [None] * len(dataset_paths)
+        elif isinstance(max_samples_per_dataset, int):
+            # Single int -> apply to all datasets
+            max_samples_list = [max_samples_per_dataset] * len(dataset_paths)
+        else:
+            max_samples_list = max_samples_per_dataset
+            if len(max_samples_list) != len(dataset_paths):
+                raise ValueError(
+                    f"max_samples_per_dataset length ({len(max_samples_list)}) "
+                    f"must match number of datasets ({len(dataset_paths)})"
+                )
+        
+        # Load all datasets with proper caching
+        datasets_list = []
+        print("\n" + "="*80)
+        print("Loading Datasets:")
+        print("="*80)
+        
+        for idx, (path, max_samples) in enumerate(zip(dataset_paths, max_samples_list)):
+            # Load dataset - use keep_in_memory=False to use disk cache
+            dataset = load_dataset(
+                'parquet',
+                data_files=path,
+                cache_dir=cache_dir,
+                keep_in_memory=False,
+            )
+            # Extract the actual dataset from DatasetDict
+            if 'train' in dataset:
+                ds = dataset['train']
+            else:
+                ds = dataset[list(dataset.keys())[0]]
+            
+            original_len = len(ds)
+            
+            # Apply max_samples if specified
+            if max_samples is not None and max_samples < original_len:
+                # Use indices instead of shuffle+select to avoid copying data
+                # This is much faster and uses cache better
+                import random
+                random.seed(42)
+                indices = list(range(original_len))
+                random.shuffle(indices)
+                selected_indices = indices[:max_samples]
+                ds = ds.select(selected_indices)
+                selected_len = len(ds)
+                print(f"  [{idx+1}] {path}")
+                print(f"      Original: {original_len:,} samples")
+                print(f"      Selected: {selected_len:,} samples (max_samples={max_samples:,})")
+            else:
+                selected_len = original_len
+                print(f"  [{idx+1}] {path}")
+                print(f"      Samples: {selected_len:,}")
+            
+            datasets_list.append(ds)
+        
+        # Concatenate if multiple datasets
+        if len(datasets_list) == 1:
+            self.dataset = datasets_list[0]
+            print("="*80 + "\n")
+        else:
+            # Use concatenate_datasets with proper caching
+            # Setting axis=0 ensures row-wise concatenation (default)
+            print("-" * 80)
+            print(f"Concatenating {len(datasets_list)} datasets...")
+            self.dataset = concatenate_datasets(datasets_list)
+            print(f"Total: {len(self.dataset):,} samples")
+            print("="*80 + "\n")
     
     def __len__(self) -> int:
         return len(self.dataset)
@@ -74,11 +152,21 @@ class GraphDataset(Dataset):
         
         # Common fields
         value['node_feat'] = torch.tensor(item['node_feat'], dtype=torch.float32)
-        value['pos'] = torch.tensor(item['pos'], dtype=torch.float32)
+        
+        # Handle coordinate field - support both 'pos' and 'coordinates' for compatibility
+        # Molecules use 'pos', while protein/DNA/RNA datasets use 'coordinates'
+        if 'pos' in item and item['pos'] is not None:
+            value['pos'] = torch.tensor(item['pos'], dtype=torch.float32)
+        elif 'coordinates' in item and item['coordinates'] is not None:
+            value['pos'] = torch.tensor(item['coordinates'], dtype=torch.float32)
+        else:
+            raise KeyError(f"Missing coordinate field ('pos' or 'coordinates') for modality '{modality}' at index {idx}")
+        
         value['edge_index'] = torch.tensor(item['edge_index'], dtype=torch.long)
         
         # Modality-specific fields
-        if modality == 'protein':
+        if modality in ['protein', 'dna', 'rna']:
+            # Protein and nucleic acids use distance-based edges
             if 'edge_attr' in item:
                 value['edge_attr'] = torch.tensor(item['edge_attr'], dtype=torch.float32)
                 if value['edge_attr'].dim() == 1:
@@ -250,7 +338,7 @@ class GraphBatchCollator:
         modalities = [item['modality'] for item in batch_list]
         
         # For simplicity, we require all graphs in batch to have same modality
-        # (This is typical for training - separate dataloaders for protein/molecule)
+        # (This is typical for training - separate dataloaders for protein/molecule/nucleic acid)
         if len(set(modalities)) > 1:
             raise ValueError("All graphs in batch must have the same modality")
         
@@ -262,6 +350,8 @@ class GraphBatchCollator:
         # Merge graphs based on modality
         if modality == 'protein':
             merged = merge_protein_graphs(graphs)
+        elif modality in ['dna', 'rna']:
+            merged = merge_nucleic_acid_graphs(graphs)
         else:
             merged = merge_molecule_graphs(graphs)
         
@@ -306,4 +396,164 @@ class GraphBatchCollator:
             'dist_labels': dist_labels,
             'noise_labels': noise_labels,
         }
+
+
+class ModalityAwareBatchSampler(Sampler):
+    """
+    Batch sampler that ensures all samples in a batch have the same modality.
+    
+    This is required because the GraphBatchCollator enforces that all graphs in a batch
+    must have the same modality. This sampler pre-groups samples by modality and creates
+    batches within each modality group.
+    
+    Args:
+        dataset: GraphDataset instance
+        batch_size: Number of samples per batch
+        shuffle: Whether to shuffle samples within each modality group
+        seed: Random seed for shuffling
+        drop_last: Whether to drop the last incomplete batch
+    """
+    
+    def __init__(
+        self,
+        dataset: GraphDataset,
+        batch_size: int,
+        shuffle: bool = True,
+        seed: int = 42,
+        drop_last: bool = False,
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self.drop_last = drop_last
+        
+        # Group indices by modality
+        self.modality_indices = {}
+        print("\nGrouping dataset by modality...")
+        
+        # Optimized: Access raw HuggingFace dataset to avoid tensor conversion
+        try:
+            # Handle torch.utils.data.Subset wrapping GraphDataset
+            if hasattr(dataset, 'dataset') and hasattr(dataset, 'indices'):
+                # This is a Subset object
+                base_dataset = dataset.dataset  # GraphDataset
+                subset_indices = dataset.indices
+                
+                if hasattr(base_dataset, 'dataset'):
+                    # Access the HF dataset inside GraphDataset
+                    raw_dataset = base_dataset.dataset
+                    
+                    # OPTIMIZED: Bulk read all modalities at once, then index
+                    all_modalities = raw_dataset['modality']
+                    
+                    # Fast grouping: only access modality for subset indices
+                    for local_idx, global_idx in enumerate(subset_indices):
+                        modality = all_modalities[global_idx]  # Direct list access, very fast
+                        if modality not in self.modality_indices:
+                            self.modality_indices[modality] = []
+                        self.modality_indices[modality].append(local_idx)
+                else:
+                    raise AttributeError("Base dataset doesn't have 'dataset' attribute")
+                    
+            # Handle GraphDataset directly (not wrapped in Subset)
+            elif hasattr(dataset, 'dataset'):
+                raw_dataset = dataset.dataset
+                modalities = raw_dataset['modality']
+                
+                # Fast grouping using list comprehension
+                for idx, modality in enumerate(modalities):
+                    if modality not in self.modality_indices:
+                        self.modality_indices[modality] = []
+                    self.modality_indices[modality].append(idx)
+            else:
+                raise AttributeError("Unknown dataset type")
+                
+        except Exception as e:
+            # Fallback: This should rarely be needed now
+            print(f"Warning: Fast grouping failed ({e}), using fallback method...")
+            dataset_len = len(dataset)
+            
+            # Track which samples have errors
+            error_count = 0
+            for idx in range(dataset_len):
+                try:
+                    # Try to get just the raw data without tensor conversion
+                    if hasattr(dataset, 'dataset') and hasattr(dataset, 'indices'):
+                        # Subset: access base dataset's raw data
+                        base_idx = dataset.indices[idx]
+                        if hasattr(dataset.dataset, 'dataset'):
+                            # GraphDataset wrapping HF dataset
+                            raw_item = dataset.dataset.dataset[base_idx]
+                        else:
+                            raw_item = dataset.dataset[base_idx]
+                        modality = raw_item['modality']
+                    elif hasattr(dataset, 'dataset'):
+                        # Direct GraphDataset access
+                        modality = dataset.dataset[idx]['modality']
+                    else:
+                        # Last resort: use __getitem__ (slow and may fail for molecules)
+                        sample = dataset[idx]
+                        modality = sample['modality']
+                    
+                    if modality not in self.modality_indices:
+                        self.modality_indices[modality] = []
+                    self.modality_indices[modality].append(idx)
+                    
+                except Exception as e:
+                    error_count += 1
+                    if error_count <= 5:  # Only print first 5 errors
+                        print(f"Warning: Could not access sample {idx}: {e}")
+                    continue
+            
+            if error_count > 5:
+                print(f"Warning: {error_count} total samples could not be accessed")
+        
+        # Log modality distribution
+        print("-" * 80)
+        for modality, indices in self.modality_indices.items():
+            print(f"  {modality}: {len(indices):,} samples")
+        print("-" * 80 + "\n")
+        
+        self.epoch = 0
+    
+    def __iter__(self):
+        # Set random seed for reproducibility
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        
+        # Shuffle indices within each modality if needed
+        all_batches = []
+        for modality, indices in self.modality_indices.items():
+            indices_copy = indices.copy()
+            
+            if self.shuffle:
+                # Shuffle within modality
+                random.Random(self.seed + self.epoch).shuffle(indices_copy)
+            
+            # Create batches for this modality
+            for i in range(0, len(indices_copy), self.batch_size):
+                batch = indices_copy[i:i + self.batch_size]
+                if len(batch) == self.batch_size or not self.drop_last:
+                    all_batches.append(batch)
+        
+        # Shuffle the order of batches (so different modalities are interleaved)
+        if self.shuffle:
+            random.Random(self.seed + self.epoch).shuffle(all_batches)
+        
+        for batch in all_batches:
+            yield batch
+    
+    def __len__(self):
+        total_batches = 0
+        for indices in self.modality_indices.values():
+            num_batches = len(indices) // self.batch_size
+            if not self.drop_last and len(indices) % self.batch_size != 0:
+                num_batches += 1
+            total_batches += num_batches
+        return total_batches
+    
+    def set_epoch(self, epoch: int):
+        """Set epoch for deterministic shuffling."""
+        self.epoch = epoch
 

@@ -159,13 +159,27 @@ def pdbid_to_features(pdb_id: str,
         For C-alpha only graphs, typical radius is 8-10 Å.
         For all-atom graphs, typical radius is 5-8 Å.
     """
-    pdb_id = pdb_id.upper()
-    
-    # Step 1: Check if CIF file exists, download if not
+    # Step 1: Check if CIF file exists (case-insensitive), download if not
     os.makedirs(structure_dir, exist_ok=True)
-    cif_path = os.path.join(structure_dir, f"{pdb_id}.cif")
     
-    if not os.path.exists(cif_path):
+    # Try to find existing file with different cases
+    cif_path_upper = os.path.join(structure_dir, f"{pdb_id.upper()}.cif")
+    cif_path_lower = os.path.join(structure_dir, f"{pdb_id.lower()}.cif")
+    cif_path_original = os.path.join(structure_dir, f"{pdb_id}.cif")
+    
+    # Use whichever exists
+    if os.path.exists(cif_path_upper):
+        cif_path = cif_path_upper
+        pdb_id = pdb_id.upper()
+    elif os.path.exists(cif_path_lower):
+        cif_path = cif_path_lower
+        pdb_id = pdb_id.lower()
+    elif os.path.exists(cif_path_original):
+        cif_path = cif_path_original
+    else:
+        # File doesn't exist, download it (normalize to lowercase for PDB standard)
+        pdb_id = pdb_id.lower()
+        cif_path = cif_path_lower
         print(f"CIF file not found for {pdb_id}, downloading...")
         try:
             download_pdb_structures([pdb_id], structure_dir, file_format='cif')

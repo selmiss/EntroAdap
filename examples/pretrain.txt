@@ -1,0 +1,4 @@
+data/encoder/molecules/train.parquet
+data/encoder/protein/protein_pretrain.parquet
+data/encoder/nacid/dna_encoder_fast.parquet
+data/encoder/nacid/rna_encoder_fast.parquet

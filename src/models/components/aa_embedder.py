@@ -1,7 +1,7 @@
 """
-All-Atom Embedder for Molecular and Protein Graphs
+All-Atom Embedder for Molecular, Protein, and Nucleic Acid Graphs
 
-Compact embedder that handles both protein and molecule features with automatic detection.
+Compact embedder that handles protein, molecule, and nucleic acid (DNA/RNA) features with automatic detection.
 Uses offset-based embedding tables for categorical features and RBF for continuous features.
 
 All embeddings are projected to a consistent hidden_dim through linear layers, ensuring
@@ -34,8 +34,10 @@ class AAEmbedder(nn.Module):
     Unified all-atom feature embedder using offset-based embedding for categorical features.
     
     Protein node features (7): [atomic_number(119), atom_name(46), residue(24), chain(27), residue_id(cont), is_backbone(2), is_ca(2)]
+    Nucleic acid node features (7): [atomic_number(119), atom_name(30), nucleotide(11), chain(27), residue_id(cont), is_backbone(2), is_phosphate(2)]
     Molecule node features (9): [atomic_num(119), chirality(4), degree(12), charge(12), numH(10), radical(6), hybrid(6), aromatic(2), ring(2)]
     Protein edges: distance (float)
+    Nucleic acid edges: distance (float)
     Molecule chem edges (3): [bond_type(5), bond_stereo(6), conjugated(2)]
     Molecule spatial edges: distance (float)
     """
@@ -46,10 +48,12 @@ class AAEmbedder(nn.Module):
         num_rbf: int = 32,
         rbf_max: float = 10.0,
         protein_residue_id_scale: float = 1000.0,
+        nucleic_acid_residue_id_scale: float = 500.0,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.protein_residue_id_scale = float(protein_residue_id_scale)
+        self.nucleic_acid_residue_id_scale = float(nucleic_acid_residue_id_scale)
         
         # Protein node: 7 features with dims [119, 46, 24, 27, -1, 2, 2]
         # IMPORTANT: keep these in sync with src/data_factory/protein/cif_to_cooridinates.py (PROTEIN_ATOM_FEATURES).
@@ -61,6 +65,16 @@ class AAEmbedder(nn.Module):
         self.protein_node_embed = nn.Embedding(sum(protein_dims), hidden_dim)
         self.protein_residue_proj = nn.Linear(1, hidden_dim)
         self.protein_node_combine = nn.Linear((len(protein_dims) + 1) * hidden_dim, hidden_dim)
+        
+        # Nucleic acid node: 7 features with dims [119, 30, 11, 27, -1, 2, 2]
+        # IMPORTANT: keep these in sync with src/data_factory/nacid/seq_to_feature.py (ATOM_NAME_VOCAB, NUCLEOTIDE_VOCAB).
+        # Features: [atomic_number(119: 0-118), atom_name(30), nucleotide(11), chain(27), residue_id(cont), is_backbone(2), is_phosphate(2)]
+        nacid_dims = [119, 30, 11, 27, 2, 2]  # Skip continuous residue_id (index 4)
+        nacid_offset = torch.tensor([0] + nacid_dims[:-1]).cumsum(0)
+        self.register_buffer('nacid_node_offset', nacid_offset)
+        self.nacid_node_embed = nn.Embedding(sum(nacid_dims), hidden_dim)
+        self.nacid_residue_proj = nn.Linear(1, hidden_dim)
+        self.nacid_node_combine = nn.Linear((len(nacid_dims) + 1) * hidden_dim, hidden_dim)
         
         # Molecule node: 9 features with dims [119, 4, 12, 12, 10, 6, 6, 2, 2]
         mol_dims = [119, 4, 12, 12, 10, 6, 6, 2, 2]
@@ -86,7 +100,7 @@ class AAEmbedder(nn.Module):
         
         Args:
             data: Dictionary with keys:
-                - 'modality': str, either 'protein' or 'molecule'
+                - 'modality': str, one of 'protein', 'molecule', 'dna', or 'rna'
                 - 'value': Dict[str, torch.Tensor], the actual graph data
         
         Returns:
@@ -104,8 +118,10 @@ class AAEmbedder(nn.Module):
             return self.embed_protein_graph(graph_data)
         elif modality == 'molecule':
             return self.embed_molecule_graph(graph_data)
+        elif modality in ['dna', 'rna']:
+            return self.embed_nucleic_acid_graph(graph_data)
         else:
-            raise ValueError(f"Unknown modality: {modality}. Expected 'protein' or 'molecule'")
+            raise ValueError(f"Unknown modality: {modality}. Expected 'protein', 'molecule', 'dna', or 'rna'")
     
     def embed_protein_graph(self, data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
@@ -139,6 +155,52 @@ class AAEmbedder(nn.Module):
         # Concatenate and combine
         h = torch.cat([embeddings.flatten(1), residue_emb], dim=-1)
         node_emb = self.protein_node_combine(h)
+        
+        # Embed edge features (distances)
+        rbf_feats = self.rbf(data['edge_attr'])  # [E, num_rbf]
+        edge_emb = self.dist_proj(rbf_feats)
+        
+        return {
+            'node_emb': node_emb,
+            'edge_emb': edge_emb,
+            'edge_index': data['edge_index'],
+            'pos': data['pos'],
+        }
+    
+    def embed_nucleic_acid_graph(self, data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Embed complete nucleic acid (DNA/RNA) graph and return standardized format.
+        
+        Similar to protein embedder but with different feature vocabularies.
+        
+        Args:
+            data: Dictionary with keys: node_feat, edge_attr, edge_index, pos
+        
+        Returns:
+            Standardized graph dict with keys: node_emb, edge_emb, edge_index, pos
+        """
+        # Embed node features [N, 7]
+        # Feature order: [atomic_number, atom_name, nucleotide, chain, residue_id, is_backbone, is_phosphate]
+        node_feat = data['node_feat']
+        
+        # Extract categorical features (indices 0, 1, 2, 3, 5, 6)
+        cat_feats = node_feat[:, [0, 1, 2, 3, 5, 6]].long()
+        
+        # Extract continuous feature (residue_id at index 4)
+        residue_id = node_feat[:, 4:5].float()
+        if self.nucleic_acid_residue_id_scale > 0:
+            residue_id = residue_id / self.nucleic_acid_residue_id_scale
+        
+        # Offset-based embedding for all categorical features
+        offset_feats = cat_feats + self.nacid_node_offset.unsqueeze(0)
+        embeddings = self.nacid_node_embed(offset_feats)  # [N, 6, hidden]
+        
+        # Project continuous feature
+        residue_emb = self.nacid_residue_proj(residue_id)  # [N, hidden]
+        
+        # Concatenate and combine
+        h = torch.cat([embeddings.flatten(1), residue_emb], dim=-1)
+        node_emb = self.nacid_node_combine(h)
         
         # Embed edge features (distances)
         rbf_feats = self.rbf(data['edge_attr'])  # [E, num_rbf]
