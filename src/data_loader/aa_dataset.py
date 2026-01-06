@@ -28,10 +28,10 @@ class GraphDataset(Dataset):
         - node_feat: List[List[int/float]] - node features
         - edge_index: List[List[int]] - [2, E] edge connectivity
         - pos: List[List[float]] - [N, 3] coordinates
-        - edge_attr: List[float] - edge attributes (for protein and nucleic acids)
+        - edge_feat_dist: List[float] - spatial edge distances (unified format for all modalities)
+        - edge_attr: List[float] - edge attributes (legacy format, supported for backward compatibility)
         - chem_edge_index: List[List[int]] - chemical edges (for molecule)
         - chem_edge_feat_cat: List[List[int]] - chemical edge features (for molecule)
-        - edge_feat_dist: List[float] - spatial edge distances (for molecule)
     
     Args:
         dataset_path: Path(s) to parquet file(s). Can be:
@@ -44,6 +44,12 @@ class GraphDataset(Dataset):
             If provided, must match the number of datasets. None means no limit.
         stratified_val_ratio: If provided, will create a stratified validation split
             where each dataset contributes proportionally. Only used when creating val splits.
+        max_atoms: Optional maximum number of atoms per structure. Structures exceeding
+            this limit will be skipped during loading. None means no limit.
+        max_edges: Optional maximum number of edges per structure. Structures exceeding
+            this limit will be skipped during loading. None means no limit.
+        skip_on_error: If True, skip samples that fail to load or exceed thresholds.
+            If False, raise exceptions. Default: True.
     """
     
     def __init__(
@@ -53,7 +59,17 @@ class GraphDataset(Dataset):
         cache_dir: Optional[str] = None,
         max_samples_per_dataset: Optional[Union[int, List[Optional[int]]]] = None,
         stratified_val_ratio: Optional[float] = None,
+        max_atoms: Optional[int] = None,
+        max_edges: Optional[int] = None,
+        skip_on_error: bool = True,
     ):
+        # Store runtime filtering parameters
+        self.max_atoms = max_atoms
+        self.max_edges = max_edges
+        self.skip_on_error = skip_on_error
+        self._filtered_count = 0
+        self._error_count = 0
+        
         # Handle different input formats
         if isinstance(dataset_path, str):
             # Check if comma-separated paths
@@ -133,62 +149,157 @@ class GraphDataset(Dataset):
             self.dataset = concatenate_datasets(datasets_list)
             print(f"Total: {len(self.dataset):,} samples")
             print("="*80 + "\n")
+        
+        # Log filtering thresholds if enabled
+        if self.max_atoms is not None or self.max_edges is not None:
+            print("Runtime Filtering Thresholds:")
+            if self.max_atoms is not None:
+                print(f"  Max atoms: {self.max_atoms:,}")
+            if self.max_edges is not None:
+                print(f"  Max edges: {self.max_edges:,}")
+            print(f"  Skip on error: {self.skip_on_error}")
+            print("="*80 + "\n")
     
     def __len__(self) -> int:
         return len(self.dataset)
     
+    def get_filter_stats(self) -> Dict[str, int]:
+        """Get statistics about filtered samples."""
+        return {
+            'filtered_count': self._filtered_count,
+            'error_count': self._error_count,
+        }
+    
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        Get a single graph sample.
+        Get a single graph sample with optional runtime filtering.
         
         Returns:
             Dictionary with 'modality' and 'value' keys matching AAEmbedder input format
+        
+        Raises:
+            RuntimeError: If sample exceeds thresholds and skip_on_error=False
+            ValueError: If sample data is invalid and skip_on_error=False
+        
+        Note:
+            When skip_on_error=True and a sample is filtered, this will recursively
+            try the next sample. This may cause issues with distributed training
+            or if many consecutive samples are filtered.
         """
-        item = self.dataset[idx]
-        modality = item['modality']
-        
-        # Convert lists to tensors
-        value = {}
-        
-        # Common fields
-        value['node_feat'] = torch.tensor(item['node_feat'], dtype=torch.float32)
-        
-        # Handle coordinate field - support both 'pos' and 'coordinates' for compatibility
-        # Molecules use 'pos', while protein/DNA/RNA datasets use 'coordinates'
-        if 'pos' in item and item['pos'] is not None:
-            value['pos'] = torch.tensor(item['pos'], dtype=torch.float32)
-        elif 'coordinates' in item and item['coordinates'] is not None:
-            value['pos'] = torch.tensor(item['coordinates'], dtype=torch.float32)
-        else:
-            raise KeyError(f"Missing coordinate field ('pos' or 'coordinates') for modality '{modality}' at index {idx}")
-        
-        value['edge_index'] = torch.tensor(item['edge_index'], dtype=torch.long)
-        
-        # Modality-specific fields
-        if modality in ['protein', 'dna', 'rna']:
-            # Protein and nucleic acids use distance-based edges
-            if 'edge_attr' in item:
-                value['edge_attr'] = torch.tensor(item['edge_attr'], dtype=torch.float32)
-                if value['edge_attr'].dim() == 1:
-                    value['edge_attr'] = value['edge_attr'].unsqueeze(-1)
-        
-        elif modality == 'molecule':
-            # Chemical edges
-            if 'chem_edge_index' in item:
-                value['chem_edge_index'] = torch.tensor(item['chem_edge_index'], dtype=torch.long)
-            if 'chem_edge_feat_cat' in item:
-                value['chem_edge_feat_cat'] = torch.tensor(item['chem_edge_feat_cat'], dtype=torch.long)
+        try:
+            item = self.dataset[idx]
+            modality = item['modality']
             
-            # Spatial edges
-            if 'edge_feat_dist' in item:
-                value['edge_feat_dist'] = torch.tensor(item['edge_feat_dist'], dtype=torch.float32)
-                if value['edge_feat_dist'].dim() == 1:
-                    value['edge_feat_dist'] = value['edge_feat_dist'].unsqueeze(-1)
+            # Early check: count atoms and edges before tensor conversion
+            if self.max_atoms is not None or self.max_edges is not None:
+                # Count atoms
+                num_atoms = len(item['node_feat']) if 'node_feat' in item else 0
+                
+                # Count edges - need to check multiple possible edge sources
+                num_edges = 0
+                if 'edge_index' in item and item['edge_index'] is not None:
+                    edge_index_data = item['edge_index']
+                    # edge_index is [2, E], so length gives us E
+                    if isinstance(edge_index_data, list) and len(edge_index_data) > 0:
+                        num_edges = len(edge_index_data[0]) if len(edge_index_data) > 0 else 0
+                
+                # For molecules, also count chemical edges
+                if modality == 'molecule' and 'chem_edge_index' in item and item['chem_edge_index'] is not None:
+                    chem_edge_data = item['chem_edge_index']
+                    if isinstance(chem_edge_data, list) and len(chem_edge_data) > 0:
+                        num_edges += len(chem_edge_data[0]) if len(chem_edge_data) > 0 else 0
+                
+                # Check thresholds
+                if self.max_atoms is not None and num_atoms > self.max_atoms:
+                    self._filtered_count += 1
+                    if self.skip_on_error:
+                        # Try next sample (with wraparound)
+                        next_idx = (idx + 1) % len(self.dataset)
+                        if next_idx == idx:
+                            raise RuntimeError(f"All samples filtered - atom threshold too strict")
+                        return self.__getitem__(next_idx)
+                    else:
+                        raise RuntimeError(
+                            f"Sample {idx} exceeds max_atoms threshold: "
+                            f"{num_atoms} atoms > {self.max_atoms} (modality: {modality})"
+                        )
+                
+                if self.max_edges is not None and num_edges > self.max_edges:
+                    self._filtered_count += 1
+                    if self.skip_on_error:
+                        # Try next sample (with wraparound)
+                        next_idx = (idx + 1) % len(self.dataset)
+                        if next_idx == idx:
+                            raise RuntimeError(f"All samples filtered - edge threshold too strict")
+                        return self.__getitem__(next_idx)
+                    else:
+                        raise RuntimeError(
+                            f"Sample {idx} exceeds max_edges threshold: "
+                            f"{num_edges} edges > {self.max_edges} (modality: {modality})"
+                        )
+            
+            # Convert lists to tensors
+            value = {}
+            
+            # Common fields
+            value['node_feat'] = torch.tensor(item['node_feat'], dtype=torch.float32)
+            
+            # Handle coordinate field - support both 'pos' and 'coordinates' for compatibility
+            # Molecules use 'pos', while protein/DNA/RNA datasets use 'coordinates'
+            if 'pos' in item and item['pos'] is not None:
+                value['pos'] = torch.tensor(item['pos'], dtype=torch.float32)
+            elif 'coordinates' in item and item['coordinates'] is not None:
+                value['pos'] = torch.tensor(item['coordinates'], dtype=torch.float32)
+            else:
+                raise KeyError(f"Missing coordinate field ('pos' or 'coordinates') for modality '{modality}' at index {idx}")
+            
+            value['edge_index'] = torch.tensor(item['edge_index'], dtype=torch.long)
+            
+            # Modality-specific fields
+            if modality in ['protein', 'dna', 'rna']:
+                # Protein and nucleic acids use distance-based edges
+                # Support both unified format (edge_feat_dist) and legacy format (edge_attr)
+                if 'edge_feat_dist' in item and item['edge_feat_dist'] is not None:
+                    value['edge_feat_dist'] = torch.tensor(item['edge_feat_dist'], dtype=torch.float32)
+                    if value['edge_feat_dist'].dim() == 1:
+                        value['edge_feat_dist'] = value['edge_feat_dist'].unsqueeze(-1)
+                elif 'edge_attr' in item and item['edge_attr'] is not None:
+                    # Legacy format: also store as edge_attr for backward compatibility
+                    value['edge_attr'] = torch.tensor(item['edge_attr'], dtype=torch.float32)
+                    if value['edge_attr'].dim() == 1:
+                        value['edge_attr'] = value['edge_attr'].unsqueeze(-1)
+            
+            elif modality == 'molecule':
+                # Chemical edges
+                if 'chem_edge_index' in item:
+                    value['chem_edge_index'] = torch.tensor(item['chem_edge_index'], dtype=torch.long)
+                if 'chem_edge_feat_cat' in item:
+                    value['chem_edge_feat_cat'] = torch.tensor(item['chem_edge_feat_cat'], dtype=torch.long)
+                
+                # Spatial edges
+                if 'edge_feat_dist' in item:
+                    value['edge_feat_dist'] = torch.tensor(item['edge_feat_dist'], dtype=torch.float32)
+                    if value['edge_feat_dist'].dim() == 1:
+                        value['edge_feat_dist'] = value['edge_feat_dist'].unsqueeze(-1)
+            
+            return {
+                'modality': modality,
+                'value': value,
+            }
         
-        return {
-            'modality': modality,
-            'value': value,
-        }
+        except Exception as e:
+            self._error_count += 1
+            if self.skip_on_error:
+                # Try next sample (with wraparound)
+                next_idx = (idx + 1) % len(self.dataset)
+                if next_idx == idx:
+                    raise RuntimeError(f"All samples failed to load") from e
+                # Only log first few errors to avoid spam
+                if self._error_count <= 5:
+                    print(f"Warning: Error loading sample {idx}: {e}. Skipping to next sample.")
+                return self.__getitem__(next_idx)
+            else:
+                raise
 
 
 class GraphBatchCollator:
@@ -254,8 +365,8 @@ class GraphBatchCollator:
             num_nodes=num_nodes,
             target_mask_ratio=self.node_mask_prob,
             min_patch_size=1,
-            max_patch_frac=0.02,
-            accept_p=0.7,
+            max_patch_frac=0.10,
+            accept_p=0.85,
             force_fill_to_target=True,
             make_undirected=True,
         )

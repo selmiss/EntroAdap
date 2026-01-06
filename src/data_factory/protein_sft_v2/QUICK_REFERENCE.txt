@@ -1,0 +1,201 @@
+================================================================================
+                    PROTEIN SFT DATASET BUILDER - QUICK REFERENCE
+================================================================================
+
+📁 LOCATION: src/data_factory/protein_sft_v2/
+
+================================================================================
+QUICK START
+================================================================================
+
+# 1. Test with 5 samples (recommended first step)
+cd src/data_factory/protein_sft_v2
+./test_demo.sh
+
+# 2. Inspect the output
+python3 inspect_output.py ../../data/sft/protein_sft_v2_demo.jsonl --show-instructions
+
+# 3. Run full production (1872 proteins with single PDB)
+./run_full_production.sh
+
+================================================================================
+FILES
+================================================================================
+
+build_protein_sft_data.py  - Main dataset building script
+test_demo.sh               - Demo run (5 samples, sequential API)
+run_full_production.sh     - Production run (full dataset, batch API)
+inspect_output.py          - Output validation and inspection tool
+README.md                  - Full documentation
+QUICK_REFERENCE.txt        - This file
+
+================================================================================
+DEMO RESULTS (VERIFIED ✅)
+================================================================================
+
+Output: data/sft/protein_sft_v2_demo.jsonl
+Records: 5
+File size: 1.17 MB
+Validation: 4/4 checks passed
+
+Sample record fields:
+  ✓ modality: "protein"
+  ✓ uniprot_id: "A1L190"
+  ✓ pdb_id: "6h86"
+  ✓ method: "X-ray"
+  ✓ resolution: "1.90 A"
+  ✓ chains: "A/B=1-88"
+  ✓ sequence: "MDDADPEERNYDNMLK..." (88 aa)
+  ✓ structure: {num_atoms, node_feat, coordinates, edge_index, edge_attr}
+  ✓ instruction: "This protein is a core component of..." (1347 chars)
+
+================================================================================
+KEY FEATURES
+================================================================================
+
+✓ Filters proteins with EXACTLY ONE PDB ID (as requested)
+✓ Downloads missing PDB structures automatically
+✓ Extracts structural features: C-alpha atoms, coordinates, graph edges
+✓ Generates fluent instructions using OpenAI GPT API (gpt-5-mini)
+✓ Two API modes: sequential (test) and batch (production)
+✓ Comprehensive validation and inspection tools
+
+================================================================================
+COMMAND LINE OPTIONS
+================================================================================
+
+--uniprot_json_dir DIR     Input UniProt JSON directory
+--structure_dir DIR        PDB CIF files directory
+--output_file FILE         Output JSONL file
+--max_samples N            Limit to N samples (for testing)
+--sequential_api           Use sequential API (default: batch)
+--model MODEL              OpenAI model (default: gpt-5-mini)
+--all_atoms                Extract all atoms (default: C-alpha only)
+--graph_radius FLOAT       Graph radius in Angstroms (default: 8.0)
+--max_neighbors INT        Max neighbors per node (default: 24)
+--no_download              Skip PDB structure download
+--download_delay FLOAT     Delay between downloads (default: 0.1s)
+--quiet                    Suppress progress output
+
+================================================================================
+EXAMPLES
+================================================================================
+
+# Test with 10 samples, sequential API
+python3 build_protein_sft_data.py --max_samples 10 --sequential_api
+
+# Custom graph parameters
+python3 build_protein_sft_data.py --graph_radius 10.0 --max_neighbors 32
+
+# Extract all atoms instead of C-alpha only
+python3 build_protein_sft_data.py --all_atoms --max_samples 5
+
+# Run without downloading new structures
+python3 build_protein_sft_data.py --no_download --max_samples 5
+
+================================================================================
+DATA STATISTICS (from demo run)
+================================================================================
+
+Input: 5 JSON files in data/uniprot/full/
+  - Total proteins with single PDB: 1,872
+  - Demo processed: 5
+  - Production will process: 1,872
+
+Output statistics:
+  - Avg sequence length: 110.4 aa
+  - Avg atoms per structure: 637.6
+  - Avg instruction length: 1564.8 chars
+  - Methods: X-ray (40%), EM (40%), NMR (20%)
+  - Resolution: 1.51 - 3.80 Å
+
+================================================================================
+OUTPUT FORMAT
+================================================================================
+
+JSONL file with one JSON object per line:
+{
+  "modality": "protein",
+  "uniprot_id": "A1L190",
+  "pdb_id": "6h86",
+  "method": "X-ray",
+  "resolution": "1.90 A",
+  "chains": "A/B=1-88",
+  "sequence": "MDDADPEERNYDNMLK...",
+  "structure": {
+    "num_atoms": 146,
+    "node_feat": [[6,1,15,0,10,1,1], ...],    # 146 x 7
+    "coordinates": [[x,y,z], ...],             # 146 x 3
+    "edge_index": [[sources], [targets]],      # 2 x num_edges
+    "edge_attr": [[distance], ...]             # num_edges x 1
+  },
+  "instruction": "This protein is a core..."
+}
+
+Node features (7D vector):
+  [atom_type, residue_index, residue_type, chain_index, 
+   residue_number, model_number, hetatm_flag]
+
+================================================================================
+VALIDATION
+================================================================================
+
+Use inspect_output.py to validate:
+  python3 inspect_output.py <output_file> [--show-instructions] [--max-display N]
+
+Validation checks:
+  ✓ All records have required fields
+  ✓ All structures have valid data
+  ✓ All instructions are non-empty
+  ✓ All records have modality='protein'
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Q: "No JSON files found"
+A: Check that data/uniprot/full/ contains *.json files
+
+Q: "Structure processing failed"
+A: Ensure data/pdb_structures/ directory exists and is writable
+   Use --download_delay 0.2 for more reliable downloads
+
+Q: "OpenAI API error"
+A: Check that OPENAI_API_KEY environment variable is set
+   For testing, use --sequential_api --max_samples 1
+
+Q: "Out of memory"
+A: Use --ca_only (C-alpha only, default) instead of --all_atoms
+   Process in smaller batches with --max_samples
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. ✅ DEMO COMPLETE - Review output at data/sft/protein_sft_v2_demo.jsonl
+
+2. 🔍 VERIFY OUTPUT - Check that instructions and structure look correct
+
+3. 🚀 PRODUCTION RUN - When ready:
+   cd src/data_factory/protein_sft_v2
+   ./run_full_production.sh
+
+4. ⏱️  WAIT FOR BATCH - OpenAI batch API has up to 24h completion window
+   Monitor progress in output file as it's written
+
+5. ✅ VALIDATE - Run inspection on full output:
+   python3 inspect_output.py ../../data/sft/protein_sft_v2_full.jsonl
+
+================================================================================
+CONTACT & SUPPORT
+================================================================================
+
+For questions or issues:
+  - Check README.md for detailed documentation
+  - Review src/data_factory/protein/build_protein_encoder_data.py for reference
+  - Review src/data_factory/protein/instruction_construction.py for API usage
+
+Dataset ready for downstream training pipelines! 🎉
+
+================================================================================
+

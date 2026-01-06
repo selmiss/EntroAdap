@@ -43,6 +43,11 @@ class MultiModalSFTDataset(Dataset):
     """
     Dataset combining graph structures with text instructions for SFT.
     
+    NOTE: This class returns graph data in NESTED format (graph_data dict).
+    The current training pipeline uses FLAT format (direct columns: modality, node_feat, pos, etc.)
+    and loads data via HuggingFace datasets directly. This class is primarily used for
+    data generation and testing.
+    
     Supports two input formats:
     1. JSONL + separate parquet (original): 
        - dataset_path: JSONL with messages and structure metadata
@@ -58,6 +63,12 @@ class MultiModalSFTDataset(Dataset):
         structure_dir: Directory containing PDB structures (for on-the-fly loading)
         cache_dir: Cache directory for HF datasets
         use_combined_parquet: If True, load from combined parquet format
+        max_atoms: Optional maximum number of atoms per structure. Structures exceeding
+            this limit will be skipped during loading. None means no limit.
+        max_edges: Optional maximum number of edges per structure. Structures exceeding
+            this limit will be skipped during loading. None means no limit.
+        skip_on_error: If True, skip samples that fail to load or exceed thresholds.
+            If False, raise exceptions. Default: True.
     """
     
     def __init__(
@@ -67,9 +78,19 @@ class MultiModalSFTDataset(Dataset):
         structure_dir: Optional[str] = None,
         cache_dir: Optional[str] = None,
         use_combined_parquet: bool = False,
+        max_atoms: Optional[int] = None,
+        max_edges: Optional[int] = None,
+        skip_on_error: bool = True,
     ):
         self.use_combined_parquet = use_combined_parquet
         self.structure_dir = structure_dir
+        
+        # Store runtime filtering parameters
+        self.max_atoms = max_atoms
+        self.max_edges = max_edges
+        self.skip_on_error = skip_on_error
+        self._filtered_count = 0
+        self._error_count = 0
         
         if use_combined_parquet:
             # Load combined parquet format
@@ -90,7 +111,13 @@ class MultiModalSFTDataset(Dataset):
             # Load graph dataset if provided
             self.graph_dataset = None
             if graph_parquet_path is not None:
-                self.graph_dataset = GraphDataset(graph_parquet_path, cache_dir=cache_dir)
+                self.graph_dataset = GraphDataset(
+                    graph_parquet_path, 
+                    cache_dir=cache_dir,
+                    max_atoms=max_atoms,
+                    max_edges=max_edges,
+                    skip_on_error=skip_on_error,
+                )
     
     def __len__(self) -> int:
         if self.use_combined_parquet:
@@ -98,8 +125,51 @@ class MultiModalSFTDataset(Dataset):
         else:
             return len(self.text_dataset)
     
-    def _load_graph_from_parquet_row(self, row) -> Dict[str, Any]:
-        """Load graph structure from a combined parquet row."""
+    def get_filter_stats(self) -> Dict[str, int]:
+        """Get statistics about filtered samples."""
+        return {
+            'filtered_count': self._filtered_count,
+            'error_count': self._error_count,
+        }
+    
+    def _load_graph_from_parquet_row(self, row) -> Optional[Dict[str, Any]]:
+        """Load graph structure from a combined parquet row with optional filtering."""
+        # Early size check before tensor conversion
+        if self.max_atoms is not None or self.max_edges is not None:
+            # Check atom count
+            if hasattr(row['node_feat'], '__len__'):
+                num_atoms = len(row['node_feat'])
+            else:
+                node_feat_arr = np.array(row['node_feat'])
+                num_atoms = len(node_feat_arr) if node_feat_arr.ndim > 0 else 0
+            
+            # Check edge count
+            num_edges = 0
+            if 'edge_index' in row and row['edge_index'] is not None:
+                edge_index_data = row['edge_index']
+                if hasattr(edge_index_data, '__len__'):
+                    edge_index_arr = np.array(edge_index_data)
+                    if edge_index_arr.ndim >= 2:
+                        num_edges = edge_index_arr.shape[1] if edge_index_arr.shape[0] > 0 else 0
+            
+            # For molecules, also count chemical edges
+            modality = row.get('modality', '')
+            if modality == 'molecule' and 'chem_edge_index' in row and row['chem_edge_index'] is not None:
+                chem_edge_data = row['chem_edge_index']
+                if hasattr(chem_edge_data, '__len__'):
+                    chem_edge_arr = np.array(chem_edge_data)
+                    if chem_edge_arr.ndim >= 2:
+                        num_edges += chem_edge_arr.shape[1] if chem_edge_arr.shape[0] > 0 else 0
+            
+            # Apply thresholds
+            if self.max_atoms is not None and num_atoms > self.max_atoms:
+                self._filtered_count += 1
+                return None
+            
+            if self.max_edges is not None and num_edges > self.max_edges:
+                self._filtered_count += 1
+                return None
+        
         # Convert nested arrays properly
         node_feat_arr = np.array(row['node_feat'])
         if node_feat_arr.dtype == object:
@@ -239,150 +309,77 @@ class MultiModalSFTDataset(Dataset):
         Returns:
             Dictionary with:
                 - messages: List of chat messages
-                - graph_data: Optional graph structure
+                - graph_data: Optional graph structure (may be None if filtered)
                 - structure_token: Token indicating where structure should be injected
-        """
-        if self.use_combined_parquet:
-            # Load from combined parquet format
-            row = self.df.iloc[idx]
-            
-            # Extract messages
-            messages = row['messages']
-            if isinstance(messages, np.ndarray):
-                messages = messages.tolist()
-            
-            result = {
-                'messages': messages,
-                'structure_token': '<STRUCTURE>',
-            }
-            
-            # Load graph structure from the same row
-            graph_data = self._load_graph_from_parquet_row(row)
-            if graph_data is not None:
-                result['graph_data'] = graph_data
-            
-            # Add SMILES for reference if available
-            if 'smiles' in row:
-                result['smiles'] = row['smiles']
-            
-            return result
         
-        else:
-            # Original JSONL format
-            item = self.text_dataset[idx]
-            
-            result = {
-                'messages': item['messages'],
-                'structure_token': '<STRUCTURE>',  # Default token
-            }
-            
-            # Load graph if structure info is provided
-            if 'structure' in item and item['structure'] is not None:
-                graph_data = self._load_graph_from_source(item['structure'])
+        Note:
+            When skip_on_error=True and a sample is filtered, this will recursively
+            try the next sample. Graph data may be None if structure exceeds thresholds.
+        """
+        try:
+            if self.use_combined_parquet:
+                # Load from combined parquet format
+                row = self.df.iloc[idx]
+                
+                # Extract messages
+                messages = row['messages']
+                if isinstance(messages, np.ndarray):
+                    messages = messages.tolist()
+                
+                result = {
+                    'messages': messages,
+                    'structure_token': '<STRUCTURE>',
+                }
+                
+                # Load graph structure from the same row (may return None if filtered)
+                graph_data = self._load_graph_from_parquet_row(row)
                 if graph_data is not None:
                     result['graph_data'] = graph_data
+                elif self.skip_on_error and (self.max_atoms is not None or self.max_edges is not None):
+                    # Structure was filtered - try next sample
+                    next_idx = (idx + 1) % len(self.df)
+                    if next_idx == idx:
+                        # Went full circle - just return without graph_data
+                        return result
+                    return self.__getitem__(next_idx)
+                
+                # Add SMILES for reference if available
+                if 'smiles' in row:
+                    result['smiles'] = row['smiles']
+                
+                return result
             
-            # Allow custom structure token
-            if 'structure_token' in item:
-                result['structure_token'] = item['structure_token']
-            
-            return result
-
-
-def preprocess_multimodal_sft_dataset(
-    dataset: Union[Dataset, Any],
-    tokenizer,
-    split: str = 'train',
-    max_seq_length: int = 1024,
-) -> Dataset:
-    """
-    Preprocess multimodal SFT dataset by tokenizing messages.
-    
-    This function:
-    1. Applies chat template to messages
-    2. Tokenizes text
-    3. Finds structure token position for patch injection (supports custom tokens)
-    4. Computes instruction positions (full prompt: system + user messages before first assistant)
-    5. Preserves graph_data for collator
-    
-    Args:
-        dataset: MultiModalSFTDataset or HF Dataset
-        tokenizer: Tokenizer with chat template (must have structure token registered)
-        split: Split name (unused, for compatibility)
-        max_seq_length: Maximum sequence length
-    
-    Returns:
-        Processed dataset with tokenized inputs, labels, patch_position, and instr_len
-    """
-    def _preprocess_example(example):
-        """Process a single example."""
-        messages = example['messages']
-        structure_token = example.get('structure_token', '<STRUCTURE>')
+            else:
+                # Original JSONL format
+                item = self.text_dataset[idx]
+                
+                result = {
+                    'messages': item['messages'],
+                    'structure_token': '<STRUCTURE>',  # Default token
+                }
+                
+                # Load graph if structure info is provided
+                if 'structure' in item and item['structure'] is not None:
+                    graph_data = self._load_graph_from_source(item['structure'])
+                    if graph_data is not None:
+                        result['graph_data'] = graph_data
+                
+                # Allow custom structure token
+                if 'structure_token' in item:
+                    result['structure_token'] = item['structure_token']
+                
+                return result
         
-        # Apply chat template to get formatted text
-        text = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-        
-        # Tokenize full text
-        tokenized = tokenizer(
-            text,
-            truncation=True,
-            max_length=max_seq_length,
-            padding=False,
-        )
-        
-        # Create labels (copy of input_ids for causal LM)
-        tokenized['labels'] = tokenized['input_ids'][:]
-        
-        # Find <STRUCTURE> token position for patch injection
-        structure_token_id = tokenizer.convert_tokens_to_ids(structure_token)
-        patch_pos = -1
-        if structure_token_id is not None and structure_token_id in tokenized['input_ids']:
-            patch_pos = tokenized['input_ids'].index(structure_token_id)
-        tokenized['patch_position'] = patch_pos
-        
-        # Instruction positions: keep a prefix length (system + user turns, up to first assistant)
-        # This is robust and avoids brittle substring/offset mapping logic.
-        first_assistant_idx = None
-        for i, msg in enumerate(messages):
-            if isinstance(msg, dict) and msg.get('role') == 'assistant':
-                first_assistant_idx = i
-                break
-        prompt_messages = messages if first_assistant_idx is None else messages[:first_assistant_idx]
-        add_generation_prompt = first_assistant_idx is not None
-        prompt_text = tokenizer.apply_chat_template(
-            prompt_messages,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
-        )
-        prompt_tok = tokenizer(
-            prompt_text,
-            truncation=True,
-            max_length=max_seq_length,
-            padding=False,
-        )
-        instr_len = min(len(prompt_tok['input_ids']), len(tokenized['input_ids']))
-        # Store instruction *length*; collator can expand this into positions efficiently.
-        tokenized['instr_len'] = int(instr_len)
-        
-        # Preserve graph data if present
-        if 'graph_data' in example:
-            tokenized['graph_data'] = example['graph_data']
-        
-        return tokenized
-    
-    # Process dataset
-    if hasattr(dataset, 'map'):
-        processed = dataset.map(
-            _preprocess_example,
-            desc="Tokenizing multimodal dataset",
-        )
-    else:
-        # If it's a list or single example
-        processed = [_preprocess_example(ex) for ex in dataset]
-    
-    return processed
-
+        except Exception as e:
+            self._error_count += 1
+            if self.skip_on_error:
+                # Try next sample (with wraparound)
+                next_idx = (idx + 1) % len(self)
+                if next_idx == idx:
+                    raise RuntimeError(f"All samples failed to load") from e
+                # Only log first few errors to avoid spam
+                if self._error_count <= 5:
+                    print(f"Warning: Error loading sample {idx}: {e}. Skipping to next sample.")
+                return self.__getitem__(next_idx)
+            else:
+                raise

@@ -256,8 +256,9 @@ def pdbid_to_features(pdb_id: str,
         'atom_info': atom_info_list,  # Keep for reference
     }
     
-    print(f"Loaded {pdb_id}: {result['num_nodes']} atoms, "
-          f"{edge_index.shape[1]} edges (radius={graph_radius}Å)")
+    # Verbose output disabled - too many structures produce excessive logging
+    # print(f"Loaded {pdb_id}: {result['num_nodes']} atoms, "
+    #       f"{edge_index.shape[1]} edges (radius={graph_radius}Å)")
     
     return result
 

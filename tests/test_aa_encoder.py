@@ -69,7 +69,7 @@ class TestAAEncoder:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': pos,
             }
@@ -97,7 +97,7 @@ class TestAAEncoder:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': torch.randn(N, 3),
             }
@@ -210,7 +210,7 @@ class TestAAEncoder:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': torch.randn(N, 3),
             }
@@ -230,7 +230,7 @@ class TestAAEncoder:
         # Test protein embedding with proper feature ranges
         protein_data = {
             'node_feat': create_protein_features(N),
-            'edge_attr': torch.rand(20, 1),
+            'edge_feat_dist': torch.rand(20, 1),
             'edge_index': torch.randint(0, N, (2, 20)),
             'pos': torch.randn(N, 3),
         }
@@ -287,7 +287,7 @@ class TestAAEncoder:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': pos,
             }
@@ -312,7 +312,7 @@ class TestAAEncoder:
                 'modality': 'protein',
                 'value': {
                     'node_feat': node_feat,
-                    'edge_attr': torch.rand(E, 1) * 5.0,
+                    'edge_feat_dist': torch.rand(E, 1) * 5.0,
                     'edge_index': torch.randint(0, N, (2, E)),
                     'pos': torch.randn(N, 3),
                 }

@@ -25,6 +25,51 @@ from src.data_factory.protein.pdbid_to_feature import pdbid_to_features
 from src.data_factory.protein.map_fetch_pdb3d import download_pdb_structures
 
 
+def extract_sequence_from_atom_info(atom_info_list: List[Dict[str, Any]]) -> str:
+    """
+    Extract amino acid sequence from atom_info list.
+    
+    Args:
+        atom_info_list: List of atom info dicts with 'residue_name', 'residue_id', 'chain'
+        
+    Returns:
+        Amino acid sequence string (one-letter codes)
+    """
+    # Standard 3-letter to 1-letter amino acid code mapping
+    aa_map = {
+        'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E', 'PHE': 'F',
+        'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LYS': 'K', 'LEU': 'L',
+        'MET': 'M', 'ASN': 'N', 'PRO': 'P', 'GLN': 'Q', 'ARG': 'R',
+        'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y',
+    }
+    
+    # Track unique residues by (chain, residue_id)
+    seen_residues = set()
+    residues = []
+    
+    for atom in atom_info_list:
+        residue_name = atom.get('residue_name', '')
+        residue_id = atom.get('residue_id', '')
+        chain = atom.get('chain', '')
+        
+        # Create unique key for this residue
+        residue_key = (chain, residue_id)
+        
+        if residue_key not in seen_residues:
+            seen_residues.add(residue_key)
+            # Convert 3-letter code to 1-letter code
+            aa_code = aa_map.get(residue_name, 'X')  # X for unknown
+            residues.append((chain, int(residue_id) if residue_id else 0, aa_code))
+    
+    # Sort by chain and residue_id to maintain sequence order
+    residues.sort(key=lambda x: (x[0], x[1]))
+    
+    # Join into sequence string
+    sequence = ''.join([r[2] for r in residues])
+    
+    return sequence
+
+
 def extract_pdb_ids_from_uniprot_json(json_file: Path) -> List[Dict[str, Any]]:
     """
     Extract PDB IDs from UniProt JSON file.
@@ -70,8 +115,8 @@ def extract_pdb_ids_from_uniprot_json(json_file: Path) -> List[Dict[str, Any]]:
 def process_pdb_record(
     record: Dict[str, Any],
     structure_dir: Path,
-    ca_only: bool = True,
-    graph_radius: float = 8.0,
+    ca_only: bool = False,
+    graph_radius: float = 4.0,
     max_neighbors: int = 24
 ) -> Optional[Dict[str, Any]]:
     """
@@ -80,7 +125,7 @@ def process_pdb_record(
     Args:
         record: Dict with 'pdb_id', 'uniprot_id', etc.
         structure_dir: Directory containing CIF files
-        ca_only: Extract only C-alpha atoms (default: True)
+        ca_only: Extract only C-alpha atoms (default: False, uses all heavy atoms)
         graph_radius: Radius for graph construction
         max_neighbors: Max neighbors per node
         
@@ -103,19 +148,24 @@ def process_pdb_record(
         if data is None:
             return None
         
+        # Extract sequence from atom_info
+        sequence = extract_sequence_from_atom_info(data.get('atom_info', []))
+        
         # Convert to expected format (lists for parquet storage)
+        # Use unified format: 'pos' (not 'coordinates') and 'edge_feat_dist' (not 'edge_attr')
         result = {
             'modality': 'protein',
             'pdb_id': pdb_id,
             'uniprot_id': record.get('uniprot_id', ''),
+            'sequence': sequence,  # Add sequence field to match schema
             'method': record.get('method', ''),
             'resolution': record.get('resolution', ''),
             'chains': record.get('chains', ''),
             'num_atoms': data['num_nodes'],
             'node_feat': data['node_feat'].tolist(),
-            'coordinates': data['coordinates'].tolist(),
+            'pos': data['coordinates'].tolist(),
             'edge_index': data['edge_index'].tolist(),
-            'edge_attr': data['edge_attr'].tolist(),
+            'edge_feat_dist': data['edge_attr'].tolist(),
         }
         
         return result
@@ -146,8 +196,8 @@ def build_protein_encoder_dataset(
     uniprot_json_dir: str,
     structure_dir: str,
     output_file: str,
-    ca_only: bool = True,
-    graph_radius: float = 8.0,
+    ca_only: bool = False,
+    graph_radius: float = 4.0,
     max_neighbors: int = 24,
     num_workers: int = None,
     batch_size: int = 50,
@@ -156,7 +206,8 @@ def build_protein_encoder_dataset(
     verbose: bool = True,
     download_missing: bool = True,
     download_delay: float = 0.1,
-    max_structures: Optional[int] = None
+    max_structures: Optional[int] = None,
+    max_file_size_mb: int = 500
 ):
     """
     Build protein encoder dataset from UniProt JSON files.
@@ -165,7 +216,7 @@ def build_protein_encoder_dataset(
         uniprot_json_dir: Directory containing UniProt JSON files
         structure_dir: Directory to store/read PDB CIF files
         output_file: Output parquet file path
-        ca_only: Extract only C-alpha atoms (default: True)
+        ca_only: Extract only C-alpha atoms (default: False, uses all heavy atoms)
         graph_radius: Radius for graph construction (default: 8.0)
         max_neighbors: Max neighbors per node (default: 24)
         num_workers: Number of parallel workers (None = auto-detect)
@@ -176,6 +227,7 @@ def build_protein_encoder_dataset(
         download_missing: Download missing PDB structures
         download_delay: Delay between download requests in seconds (default: 0.1)
         max_structures: Maximum number of structures to process (for testing)
+        max_file_size_mb: Maximum size per output file in MB (default: 500)
     """
     uniprot_dir = Path(uniprot_json_dir)
     struct_dir = Path(structure_dir)
@@ -188,9 +240,10 @@ def build_protein_encoder_dataset(
         print(f"UniProt JSON directory: {uniprot_dir}")
         print(f"Structure directory: {struct_dir}")
         print(f"Output file: {output_path}")
-        print(f"C-alpha only: {ca_only}")
+        print(f"Atom selection: {'C-alpha only' if ca_only else 'All heavy atoms'}")
         print(f"Graph radius: {graph_radius} Å")
         print(f"Max neighbors: {max_neighbors}")
+        print(f"Max file size: {max_file_size_mb} MB")
     
     # Step 1: Extract all PDB IDs from UniProt JSON files
     if verbose:
@@ -282,20 +335,41 @@ def build_protein_encoder_dataset(
     
     processed_pdb_ids: Set[str] = set()
     start_idx = 0
+    existing_files = []
     
-    if resume and output_path.exists():
-        try:
-            df_existing = pd.read_parquet(output_path)
-            # Normalize to lowercase for case-insensitive comparison
-            processed_pdb_ids = set(pdb_id.lower() for pdb_id in df_existing['pdb_id'])
-            start_idx = len(df_existing)
-            if verbose:
-                print(f"Found existing checkpoint: {len(df_existing)} structures already processed")
-                print(f"Resuming from structure {start_idx + 1}...")
-        except Exception as e:
-            if verbose:
-                print(f"Could not load existing checkpoint: {e}")
-                print("Starting from scratch...")
+    if resume:
+        # Check for single file or multiple parts
+        if output_path.exists():
+            existing_files = [output_path]
+        
+        # Always check for part files
+        part_files = sorted(output_path.parent.glob(f"{output_path.stem}_part_*{output_path.suffix}"))
+        if part_files:
+            if output_path.exists():
+                # Both base file and part files exist
+                existing_files = [output_path] + part_files
+            else:
+                existing_files = part_files
+        
+        if existing_files:
+            try:
+                for f in existing_files:
+                    df_part = pd.read_parquet(f)
+                    # Normalize to lowercase for case-insensitive comparison
+                    processed_pdb_ids.update(pdb_id.lower() for pdb_id in df_part['pdb_id'])
+                    start_idx += len(df_part)
+                if verbose:
+                    print(f"Found {len(existing_files)} existing file(s): {start_idx} structures already processed")
+                    for f in existing_files:
+                        size_mb = f.stat().st_size / (1024**2)
+                        print(f"    - {f.name} ({size_mb:.2f} MB)")
+                    print(f"Resuming from structure {start_idx + 1}...")
+            except Exception as e:
+                if verbose:
+                    print(f"Could not load existing checkpoint: {e}")
+                    print("Starting from scratch...")
+                processed_pdb_ids = set()
+                start_idx = 0
     
     # Filter out already processed structures (case-insensitive)
     if processed_pdb_ids:
@@ -321,6 +395,7 @@ def build_protein_encoder_dataset(
     success_count = 0
     fail_count = 0
     total_processed = start_idx
+    current_part = 1
     
     # Create output directory
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -353,7 +428,9 @@ def build_protein_encoder_dataset(
                 
                 # Save checkpoint every checkpoint_interval structures
                 if len(data_list) >= checkpoint_interval:
-                    _save_checkpoint(output_path, data_list, resume, verbose)
+                    current_part = _save_checkpoint_with_split(
+                        output_path, data_list, current_part, max_file_size_mb, resume, verbose
+                    )
                     total_processed += len(data_list)
                     data_list = []
     else:
@@ -370,13 +447,17 @@ def build_protein_encoder_dataset(
             
             # Save checkpoint every checkpoint_interval structures
             if len(data_list) >= checkpoint_interval:
-                _save_checkpoint(output_path, data_list, resume, verbose)
+                current_part = _save_checkpoint_with_split(
+                    output_path, data_list, current_part, max_file_size_mb, resume, verbose
+                )
                 total_processed += len(data_list)
                 data_list = []
     
     # Save final batch if any remaining
     if data_list:
-        _save_checkpoint(output_path, data_list, resume, verbose)
+        current_part = _save_checkpoint_with_split(
+            output_path, data_list, current_part, max_file_size_mb, resume, verbose
+        )
         total_processed += len(data_list)
     
     if verbose:
@@ -384,14 +465,34 @@ def build_protein_encoder_dataset(
         if fail_count > 0:
             print(f"Failed to process: {fail_count} structures")
     
-    # Load and return final dataset
-    df_output = pd.read_parquet(output_path)
+    # Load and return final dataset from all files
+    all_files = []
+    if output_path.exists():
+        all_files = [output_path]
+    part_files = sorted(output_path.parent.glob(f"{output_path.stem}_part_*{output_path.suffix}"))
+    if part_files:
+        if output_path.exists():
+            all_files = [output_path] + part_files
+        else:
+            all_files = part_files
+    
+    if not all_files:
+        raise ValueError(f"No output files found at {output_path}")
+    
+    # Load all parts
+    df_parts = []
+    for f in all_files:
+        df_parts.append(pd.read_parquet(f))
+    df_output = pd.concat(df_parts, ignore_index=True) if len(df_parts) > 1 else df_parts[0]
     
     if verbose:
-        file_size_mb = output_path.stat().st_size / (1024 * 1024)
+        total_size_mb = sum(f.stat().st_size for f in all_files) / (1024 * 1024)
         print(f"\nFinal dataset: {len(df_output)} total structures")
-        print(f"Saved to: {output_path}")
-        print(f"File size: {file_size_mb:.2f} MB")
+        print(f"Output files: {len(all_files)}")
+        for f in all_files:
+            file_size_mb = f.stat().st_size / (1024 * 1024)
+            print(f"  - {f.name} ({file_size_mb:.2f} MB)")
+        print(f"Total size: {total_size_mb:.2f} MB")
         if len(unique_records) > 0:
             print(f"Success rate: {success_count/len(unique_records)*100:.1f}%")
         
@@ -413,25 +514,87 @@ def build_protein_encoder_dataset(
     return df_output
 
 
-def _save_checkpoint(output_file: Path, new_data: List[Dict[str, Any]], append: bool, verbose: bool):
-    """Save checkpoint by appending new data to existing parquet file."""
+def _save_checkpoint_with_split(
+    base_output_file: Path, 
+    new_data: List[Dict[str, Any]], 
+    current_part: int,
+    max_file_size_mb: int,
+    append: bool,
+    verbose: bool
+) -> int:
+    """
+    Save checkpoint by appending new data to existing parquet file,
+    with automatic splitting if file size exceeds max_file_size_mb.
+    
+    Args:
+        base_output_file: Base output file path
+        new_data: List of new data dictionaries to append
+        current_part: Current part number (1 for first file)
+        max_file_size_mb: Maximum file size in MB before splitting
+        append: Whether to append to existing file
+        verbose: Print progress information
+        
+    Returns:
+        Updated current_part number
+    """
     if not new_data:
-        return
+        return current_part
     
     df_new = pd.DataFrame(new_data)
     
-    if append and output_file.exists():
-        # Append to existing file
-        df_existing = pd.read_parquet(output_file)
-        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-        df_combined.to_parquet(output_file, index=False)
-        if verbose:
-            print(f"  Checkpoint saved: {len(df_combined)} total structures")
+    # Determine current file path
+    if current_part == 1:
+        current_file = base_output_file
     else:
-        # Create new file
-        df_new.to_parquet(output_file, index=False)
+        current_file = base_output_file.parent / f"{base_output_file.stem}_part_{current_part:03d}{base_output_file.suffix}"
+    
+    # Check if we need to split to a new file
+    should_split = False
+    if append and current_file.exists():
+        current_size_mb = current_file.stat().st_size / (1024 * 1024)
+        
+        # Estimate size of new data (rough estimate based on current data)
+        estimated_new_size_mb = len(df_new) * current_size_mb / pd.read_parquet(current_file).shape[0] if current_size_mb > 0 else 0
+        
+        # If adding new data would exceed max size, split to new file
+        if current_size_mb + estimated_new_size_mb > max_file_size_mb:
+            should_split = True
+            current_part += 1
+            current_file = base_output_file.parent / f"{base_output_file.stem}_part_{current_part:03d}{base_output_file.suffix}"
+            
+            if verbose:
+                print(f"  → Starting new part {current_part} (previous file: {current_size_mb:.2f} MB, estimated new: {estimated_new_size_mb:.2f} MB)")
+    
+    # Save data
+    if append and current_file.exists() and not should_split:
+        # Append to existing file (only if we're not splitting)
+        try:
+            df_existing = pd.read_parquet(current_file)
+            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+            df_combined.to_parquet(current_file, index=False)
+            file_size_mb = current_file.stat().st_size / (1024 * 1024)
+            if verbose:
+                print(f"  ✓ Checkpoint saved to {current_file.name}: {len(df_combined)} structures ({file_size_mb:.2f} MB)")
+        except Exception as e:
+            if verbose:
+                print(f"  ⚠ Error appending to {current_file.name}: {e}")
+                print(f"  → Creating new part instead...")
+            # If append fails, create new part
+            current_part += 1
+            current_file = base_output_file.parent / f"{base_output_file.stem}_part_{current_part:03d}{base_output_file.suffix}"
+            df_new.to_parquet(current_file, index=False)
+            file_size_mb = current_file.stat().st_size / (1024 * 1024)
+            if verbose:
+                print(f"  ✓ New part created: {current_file.name}: {len(df_new)} structures ({file_size_mb:.2f} MB)")
+    else:
+        # Create new file (either first time or after split)
+        df_new.to_parquet(current_file, index=False)
+        file_size_mb = current_file.stat().st_size / (1024 * 1024)
         if verbose:
-            print(f"  Checkpoint saved: {len(df_new)} structures")
+            action = "New file created" if not should_split else "New part started"
+            print(f"  ✓ {action}: {current_file.name}: {len(df_new)} structures ({file_size_mb:.2f} MB)")
+    
+    return current_part
 
 
 def main():
@@ -458,14 +621,14 @@ def main():
         help='Output parquet file path'
     )
     parser.add_argument(
-        '--all_atoms',
+        '--ca_only',
         action='store_true',
-        help='Extract all atoms instead of C-alpha only'
+        help='Extract only C-alpha atoms instead of all heavy atoms (default: all heavy atoms)'
     )
     parser.add_argument(
         '--graph_radius',
         type=float,
-        default=8.0,
+        default=4.0,
         help='Radius for graph construction in Angstroms (default: 8.0)'
     )
     parser.add_argument(
@@ -483,7 +646,7 @@ def main():
     parser.add_argument(
         '--batch_size',
         type=int,
-        default=50,
+        default=8,
         help='Batch size for multiprocessing (default: 50)'
     )
     parser.add_argument(
@@ -519,6 +682,12 @@ def main():
         default=None,
         help='Maximum number of structures to process (for testing)'
     )
+    parser.add_argument(
+        '--max_file_size_mb',
+        type=int,
+        default=500,
+        help='Maximum size per output file in MB (default: 500, prevents PyArrow list overflow)'
+    )
     
     args = parser.parse_args()
     
@@ -526,7 +695,7 @@ def main():
         uniprot_json_dir=args.uniprot_json_dir,
         structure_dir=args.structure_dir,
         output_file=args.output_file,
-        ca_only=not args.all_atoms,
+        ca_only=args.ca_only,
         graph_radius=args.graph_radius,
         max_neighbors=args.max_neighbors,
         num_workers=args.num_workers,
@@ -536,7 +705,8 @@ def main():
         verbose=not args.quiet,
         download_missing=not args.no_download,
         download_delay=args.download_delay,
-        max_structures=args.max_structures
+        max_structures=args.max_structures,
+        max_file_size_mb=args.max_file_size_mb
     )
 
 

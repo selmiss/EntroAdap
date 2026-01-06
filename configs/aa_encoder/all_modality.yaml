@@ -26,10 +26,14 @@ model:
 data:
   # Multiple datasets with different modalities
   train_data_path:
-    - data/encoder/molecules/train.parquet
-    - data/encoder/protein/protein_pretrain.parquet
-    - data/encoder/nacid/dna_encoder_fast.parquet
-    - data/encoder/nacid/rna_encoder_fast.parquet
+    - data/sft/molecule_4A/comprehensive_conversations-preprocessed_part_1.parquet
+    - data/sft/molecule_4A/detailed_structural_descriptions-preprocessed_part_1.parquet
+    - data/encoder/protein/protein_pretrain_4A_part_002.parquet
+    - data/encoder/protein/protein_pretrain_4A_part_003.parquet
+    - data/encoder/protein/protein_pretrain_4A_part_010.parquet
+    - data/sft/nacid/dna_sft_part001.parquet
+    - data/sft/nacid/dna_sft_part002.parquet
+    - data/sft/nacid/rna_sft_part000.parquet
   
   # Validation split configuration
   val_split_ratio: 0.01  # 5% validation split
@@ -49,10 +53,14 @@ data:
   
   # Option B: Different limits per dataset (matches order in train_data_path)
   max_samples_per_dataset:
-    - 20000   # molecules: use 5k samples
-    - 10000  # protein: use 10k samples
-    - 3000   # dna: use 8k samples
-    - 3000   # rna: use 7k samples
+    - 5000   # molecules: use 5k samples
+    - 5000   # molecules: use 5k samples
+    - 1000  # protein: use 10k samples
+    - 1000  # protein: use 10k samples
+    - 1000  # protein: use 10k samples
+    - 2000   # dna: use 8k samples
+    - 2000   # dna: use 8k samples
+    - 2000   # rna: use 7k samples
   
   # Option C: Mixed limits (null means no limit for that dataset)
   # max_samples_per_dataset:
@@ -61,19 +69,26 @@ data:
   #   - null   # dna: use all
   #   - 5000   # rna: use 5k
   
+  # Runtime filtering thresholds
+  # These are applied when loading data during training (not during preprocessing)
+  # Structures exceeding these limits will be automatically skipped
+  max_atoms: 30000       # Maximum atoms per structure (null = no limit, e.g., 50000)
+  max_edges: 500000       # Maximum edges per structure (null = no limit, e.g., 500000)
+  skip_on_error: true   # Skip samples that fail to load or exceed thresholds
+  
   # Masking parameters
-  node_mask_prob: 0.15
+  node_mask_prob: 0.2
   noise_std: 0.1
-  use_soft_dist_targets: false
+  use_soft_dist_targets: true
   soft_dist_sigma: 0.5
 
 # Training configuration
 training:
-  output_dir: ./checkpoints/aa_encoder_multi_limited
-  per_device_train_batch_size: 4
-  per_device_eval_batch_size: 4
+  output_dir: ./checkpoints/test
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
   learning_rate: 1.0e-4
-  num_train_epochs: 5
+  num_train_epochs: 3
   warmup_steps: 200
   
   # Logging and saving

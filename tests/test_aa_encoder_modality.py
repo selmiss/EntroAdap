@@ -70,7 +70,7 @@ class TestAAEncoderModality:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': torch.randn(N, 3),
             }
@@ -158,7 +158,7 @@ class TestAAEncoderModality:
             'modality': 'invalid_type',
             'value': {
                 'node_feat': torch.randn(N, 7),
-                'edge_attr': torch.rand(20, 1),
+                'edge_feat_dist': torch.rand(20, 1),
                 'edge_index': torch.randint(0, N, (2, 20)),
                 'pos': torch.randn(N, 3),
             }
@@ -174,7 +174,7 @@ class TestAAEncoderModality:
         data = {
             'value': {
                 'node_feat': torch.randn(N, 7),
-                'edge_attr': torch.rand(20, 1),
+                'edge_feat_dist': torch.rand(20, 1),
                 'edge_index': torch.randint(0, N, (2, 20)),
                 'pos': torch.randn(N, 3),
             }
@@ -203,7 +203,7 @@ class TestAAEncoderModality:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': torch.randn(N, 3),
             }
@@ -258,7 +258,7 @@ class TestAAEncoderModality:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': pos_original.clone(),
             }
@@ -287,7 +287,7 @@ class TestAAEncoderModality:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': pos_original.clone(),
             }
@@ -312,7 +312,7 @@ class TestAAEncoderModality:
                 'modality': 'protein',
                 'value': {
                     'node_feat': node_feat,
-                    'edge_attr': torch.rand(E, 1) * 5.0,
+                    'edge_feat_dist': torch.rand(E, 1) * 5.0,
                     'edge_index': torch.randint(0, N, (2, E)),
                     'pos': torch.randn(N, 3),
                 }
@@ -355,7 +355,7 @@ class TestAAEncoderModality:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': torch.randn(N, 3),
             }
@@ -410,7 +410,7 @@ class TestAAEncoderModality:
             'modality': 'protein',
             'value': {
                 'node_feat': node_feat,
-                'edge_attr': torch.rand(E, 1) * 5.0,
+                'edge_feat_dist': torch.rand(E, 1) * 5.0,
                 'edge_index': torch.randint(0, N, (2, E)),
                 'pos': torch.randn(N, 3),
             }

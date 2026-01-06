@@ -15,6 +15,7 @@ from src.models.training_configs import ScriptArguments, SFTConfig, OctopusConfi
 from src.data_loader import MultiModalDataCollator, preprocess_multimodal_dataset
 from src.trainer.octopus_trainer import MultiModalSFTTrainer
 from utils import get_dataset, get_tokenizer
+from utils.data import print_modality_statistics
 from utils.env_utils import expand_env_vars
 from utils.model_utils import get_model_and_peft_config
 from utils.callbacks import get_callbacks
@@ -64,6 +65,11 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     # Load dataset, tokenizer, and model #
     ######################################
     dataset = get_dataset(script_args)
+    
+    # Print modality statistics before training
+    if script_args.dataset_train_split in dataset:
+        print_modality_statistics(dataset[script_args.dataset_train_split], "Training Dataset")
+    
     tokenizer = get_tokenizer(model_args, training_args)
     
     # Load model + PEFT config (standard LLM vs custom multimodal)
@@ -80,17 +86,25 @@ def main(script_args, training_args, model_args, multimodal_args=None):
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
     
-    # Add multimodal special token for graph/structure injection
+    # Add multimodal special tokens for graph/structure injection
+    # Define structure tokens to try (in order of preference)
+    structure_tokens = ["<STRUCTURE>", "<mol>", "<STRUCT>", "<DNA>"]
+    
     if multimodal_args is not None and multimodal_args.use_custom_model:
-        structure_token = "<STRUCTURE>"
-        if structure_token not in tokenizer.get_vocab():
-            logger.info(f"Adding special token: {structure_token}")
-            tokenizer.add_special_tokens({"additional_special_tokens": [structure_token]})
+        # Add all structure tokens to tokenizer
+        tokens_to_add = []
+        for token in structure_tokens:
+            if token not in tokenizer.get_vocab():
+                tokens_to_add.append(token)
         
-        # Resize model embeddings if new tokens were added
-        # NOTE: For the custom multimodal wrapper, resize the *inner* LLM embeddings.
-        inner_llm = getattr(model, "llm_model", None)
-        (inner_llm or model).resize_token_embeddings(len(tokenizer))
+        if tokens_to_add:
+            logger.info(f"Adding special tokens: {tokens_to_add}")
+            tokenizer.add_special_tokens({"additional_special_tokens": tokens_to_add})
+            
+            # Resize model embeddings if new tokens were added
+            # NOTE: For the custom multimodal wrapper, resize the *inner* LLM embeddings.
+            inner_llm = getattr(model, "llm_model", None)
+            (inner_llm or model).resize_token_embeddings(len(tokenizer))
 
     ############################
     # Initialize the SFT Trainer
@@ -101,22 +115,36 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     
     if use_multimodal:
         logger.info("Using custom MultiModalDataCollator and MultiModalSFTTrainer for multimodal training")
-
+        
         data_collator = MultiModalDataCollator(
             tokenizer=tokenizer,
             padding=True,
             max_length=multimodal_args.max_seq_length,
             return_tensors="pt",
+            structure_tokens=structure_tokens,
+            insert_structure_if_missing=True,
         )
+        
+        # Preprocess dataset (tokenization + modality extraction)
+        # Note: The MultiModalSFTTrainer will use ModalityAwareBatchSampler to ensure
+        # batches don't mix different modalities (e.g., DNA and RNA)
+        # Structure filtering happens during training via skip_on_error in the collator
+
         dataset = preprocess_multimodal_dataset(
             dataset=dataset,
             tokenizer=tokenizer,
             split=script_args.dataset_train_split,
             max_seq_length=multimodal_args.max_seq_length,
+            structure_tokens=structure_tokens,
+            insert_structure_if_missing=True,
+            max_atoms=multimodal_args.max_atoms,
+            max_edges=multimodal_args.max_edges,
+            filter_before_tokenization=False,  # Filtering happens during training for efficiency
         )
     
     # Use custom trainer for multimodal, standard for text-only
     trainer_class = MultiModalSFTTrainer if use_multimodal else SFTTrainer
+    
     trainer = trainer_class(
         model=model,
         args=training_args,

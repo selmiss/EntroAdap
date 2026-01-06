@@ -85,7 +85,7 @@ def dna_to_pdb(seq: str, out_pdb: str, fiber_exe: str = "fiber") -> str:
     return out_pdb
 
 
-def rna_to_pdb(seq: str, out_pdb: str, fiber_exe: str = "fiber") -> str:
+def rna_to_pdb(seq: str, out_pdb: str, fiber_exe: str = "fiber", single_strand: bool = True) -> str:
     """
     Uses X3DNA `fiber` to build a canonical A-RNA model from sequence and write PDB.
     
@@ -93,18 +93,30 @@ def rna_to_pdb(seq: str, out_pdb: str, fiber_exe: str = "fiber") -> str:
         seq: RNA sequence (A/C/G/U)
         out_pdb: Output PDB file path
         fiber_exe: Path to fiber executable
+        single_strand: Generate single-stranded RNA (default: True, biologically correct)
     
     Returns:
         Path to generated PDB file
     """
     seq = _clean_rna(seq)
     out_pdb = str(Path(out_pdb).resolve())
-    Path(out_pdb).parent.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(out_pdb).parent
+    out_dir.mkdir(parents=True, exist_ok=True)
 
+    # fiber writes temp files to cwd, so we need to run it from the output directory
+    old_cwd = os.getcwd()
     try:
+        os.chdir(out_dir)
+        
         # Use -rna flag for A-form RNA structure
+        # Use -single flag to generate single-stranded RNA (biological default)
+        cmd = [fiber_exe, "-rna", f"-seq={seq}"]
+        if single_strand:
+            cmd.append("-single")
+        cmd.append(Path(out_pdb).name)  # Use relative path since we're in the output dir
+        
         subprocess.run(
-            [fiber_exe, "-rna", f"-seq={seq}", out_pdb],
+            cmd,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -114,6 +126,8 @@ def rna_to_pdb(seq: str, out_pdb: str, fiber_exe: str = "fiber") -> str:
         raise RuntimeError(f"Cannot find `{fiber_exe}` in PATH.") from e
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"`fiber` failed.\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}") from e
+    finally:
+        os.chdir(old_cwd)
 
     if not os.path.exists(out_pdb) or os.path.getsize(out_pdb) == 0:
         raise RuntimeError("fiber produced empty output PDB.")
@@ -193,6 +207,7 @@ def rna_sequence_to_coords_or_cif(
     workdir: str = "./x3dna_test_rna",
     write_cif: bool = False,
     fiber_exe: str = "fiber",
+    single_strand: bool = True,
 ) -> Dict[str, object]:
     """
     End-to-end RNA processing:
@@ -203,6 +218,7 @@ def rna_sequence_to_coords_or_cif(
         workdir: Working directory for output files
         write_cif: Whether to also generate mmCIF format
         fiber_exe: Path to fiber executable
+        single_strand: Generate single-stranded RNA (default: True, biologically correct)
         
     Returns:
         dict with: fiber_info, pdb_path, coords (N,3), meta (list), and optionally cif_path.
@@ -213,7 +229,7 @@ def rna_sequence_to_coords_or_cif(
     info = test_3dna_fiber(fiber_exe=fiber_exe)
 
     # 2) build RNA PDB
-    pdb_path = rna_to_pdb(seq, out_pdb=str(Path(workdir) / "model_rna.pdb"), fiber_exe=fiber_exe)
+    pdb_path = rna_to_pdb(seq, out_pdb=str(Path(workdir) / "model_rna.pdb"), fiber_exe=fiber_exe, single_strand=single_strand)
 
     # 3) parse coords
     coords, meta = pdb_to_atom_coords(pdb_path)
@@ -274,6 +290,7 @@ def nucleic_acid_to_coords_or_cif(
     workdir: str = "./x3dna_test_na",
     write_cif: bool = False,
     fiber_exe: str = "fiber",
+    rna_single_strand: bool = True,
 ) -> Dict[str, object]:
     """
     Generic nucleic acid processing that handles both DNA and RNA.
@@ -284,6 +301,7 @@ def nucleic_acid_to_coords_or_cif(
         workdir: Working directory for output files
         write_cif: Whether to also generate mmCIF format
         fiber_exe: Path to fiber executable
+        rna_single_strand: Generate RNA as single-stranded (default: True, biologically correct)
         
     Returns:
         dict with: seq_type, fiber_info, pdb_path, coords (N,3), meta (list), and optionally cif_path.
@@ -310,7 +328,7 @@ def nucleic_acid_to_coords_or_cif(
     if seq_type == "dna":
         result = dna_sequence_to_coords_or_cif(seq, workdir, write_cif, fiber_exe)
     elif seq_type == "rna":
-        result = rna_sequence_to_coords_or_cif(seq, workdir, write_cif, fiber_exe)
+        result = rna_sequence_to_coords_or_cif(seq, workdir, write_cif, fiber_exe, single_strand=rna_single_strand)
     else:
         raise ValueError(f"seq_type must be 'dna', 'rna', or 'auto'. Got: {seq_type}")
     

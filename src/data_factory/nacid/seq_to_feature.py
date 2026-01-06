@@ -288,7 +288,8 @@ def sequence_to_features(
     graph_radius: float = 8.0,
     max_neighbors: int = 24,
     max_seq_length: int = 500,
-    fiber_exe: str = "fiber"
+    fiber_exe: str = "fiber",
+    rna_single_strand: bool = True,
 ) -> Optional[Dict]:
     """
     Convert nucleic acid sequence to structural features and graph representation.
@@ -308,6 +309,7 @@ def sequence_to_features(
         max_neighbors: Max neighbors per node
         max_seq_length: Maximum sequence length (will truncate longer sequences)
         fiber_exe: Path to X3DNA fiber executable
+        rna_single_strand: Generate RNA as single-stranded (default: True, biologically correct)
         
     Returns:
         Dictionary with keys:
@@ -334,12 +336,14 @@ def sequence_to_features(
             seq_type=seq_type,
             workdir=workdir,
             write_cif=False,
-            fiber_exe=fiber_exe
+            fiber_exe=fiber_exe,
+            rna_single_strand=rna_single_strand,
         )
         detected_type = result['seq_type']
         pdb_path = result['pdb_path']
     except Exception as e:
-        # Silently return None for failed sequences
+        # Print error for debugging
+        print(f"Error generating structure for {seq_id}: {e}")
         return None
     
     # Step 2: Parse PDB file
@@ -379,6 +383,203 @@ def sequence_to_features(
         'coordinates': coordinates,
         'edge_index': edge_index,
         'edge_attr': edge_attr,
+    }
+    
+    return result_dict
+
+
+def sequence_to_features_windowed(
+    seq: str,
+    seq_id: str,
+    seq_type: Literal["dna", "rna", "auto"] = "auto",
+    workdir: str = "./x3dna_workdir",
+    graph_radius: float = 8.0,
+    max_neighbors: int = 24,
+    window_size: int = 500,
+    overlap: int = 50,
+    fiber_exe: str = "fiber",
+    rna_single_strand: bool = True,
+) -> Optional[Dict]:
+    """
+    Convert long nucleic acid sequence to structural features using sliding windows.
+    Windows are merged into a single unified graph structure.
+    
+    This approach allows processing of sequences longer than X3DNA's ~500nt limit
+    for RNA by:
+    1. Breaking sequence into overlapping windows
+    2. Processing each window with X3DNA fiber
+    3. Merging windows into single graph (skipping duplicate overlap regions)
+    4. Rebuilding edge connectivity across the full structure
+    
+    Args:
+        seq: Nucleic acid sequence (DNA or RNA)
+        seq_id: Identifier for this sequence
+        seq_type: "dna", "rna", or "auto" (auto-detects based on T vs U)
+        workdir: Working directory for temporary files
+        graph_radius: Distance threshold for edge creation in Angstroms
+        max_neighbors: Max neighbors per node
+        window_size: Size of each window in nucleotides (default: 500)
+        overlap: Overlap between consecutive windows in nucleotides (default: 50)
+        fiber_exe: Path to X3DNA fiber executable
+        rna_single_strand: Generate RNA as single-stranded (default: True, biologically correct)
+        
+    Returns:
+        Dictionary with keys:
+            - 'modality': str - "dna" or "rna"
+            - 'seq_id': str - Sequence identifier
+            - 'sequence': str - Original sequence
+            - 'seq_length': int - Length of sequence
+            - 'num_atoms': int - Number of atoms
+            - 'node_feat': np.ndarray [num_atoms, 7] - Atom feature matrix
+            - 'coordinates': np.ndarray [num_atoms, 3] - 3D coordinates
+            - 'edge_index': np.ndarray [2, num_edges] - Graph connectivity
+            - 'edge_attr': np.ndarray [num_edges, 1] - Edge distances
+            - 'num_windows': int - Number of windows processed
+        Returns None if processing fails
+    """
+    import tempfile
+    import shutil
+    
+    # If sequence is short enough, use regular processing
+    if len(seq) <= window_size:
+        result = sequence_to_features(
+            seq=seq,
+            seq_id=seq_id,
+            seq_type=seq_type,
+            workdir=workdir,
+            graph_radius=graph_radius,
+            max_neighbors=max_neighbors,
+            max_seq_length=window_size,
+            fiber_exe=fiber_exe,
+            rna_single_strand=rna_single_strand,
+        )
+        if result:
+            result['num_windows'] = 1
+        return result
+    
+    # Process sequence in overlapping windows
+    windows_data = []
+    
+    # Create main working directory
+    main_workdir = Path(workdir)
+    main_workdir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate windows
+    window_positions = []
+    for i in range(0, len(seq), window_size - overlap):
+        end_pos = min(i + window_size, len(seq))
+        if end_pos - i < 100:  # Skip very short terminal windows
+            continue
+        window_positions.append((i, end_pos))
+    
+    if not window_positions:
+        return None
+    
+    # Process each window
+    for window_idx, (start, end) in enumerate(window_positions):
+        window_seq = seq[start:end]
+        window_workdir = main_workdir / f"window_{window_idx}"
+        window_workdir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Process window
+            structure = sequence_to_features(
+                seq=window_seq,
+                seq_id=f"{seq_id}_window_{window_idx}",
+                seq_type=seq_type,
+                workdir=str(window_workdir),
+                graph_radius=graph_radius,
+                max_neighbors=max_neighbors,
+                max_seq_length=window_size,
+                fiber_exe=fiber_exe,
+                rna_single_strand=rna_single_strand,
+            )
+            
+            if structure:
+                windows_data.append({
+                    'structure': structure,
+                    'start_nt': start,
+                    'end_nt': end,
+                    'seq': window_seq
+                })
+        except Exception:
+            pass  # Skip failed windows
+        finally:
+            # Clean up window workdir
+            if window_workdir.exists():
+                shutil.rmtree(window_workdir, ignore_errors=True)
+    
+    if not windows_data:
+        return None
+    
+    # Merge windows into single structure
+    merged_coords = []
+    merged_features = []
+    atom_offset = 0
+    
+    for idx, window_data in enumerate(windows_data):
+        structure = window_data['structure']
+        start_nt = window_data['start_nt']
+        
+        if idx == 0:
+            # First window: take all atoms
+            merged_coords.append(structure['coordinates'])
+            merged_features.append(structure['node_feat'])
+            atom_offset = len(structure['coordinates'])
+        else:
+            # Subsequent windows: skip overlap region
+            prev_end_nt = windows_data[idx-1]['end_nt']
+            overlap_nt = prev_end_nt - start_nt
+            
+            if overlap_nt > 0:
+                # Estimate atoms to skip based on atoms per nucleotide
+                atoms_per_nt = len(structure['coordinates']) / len(window_data['seq'])
+                skip_atoms = int(overlap_nt * atoms_per_nt)
+                
+                # Take only non-overlapping atoms
+                non_overlap_coords = structure['coordinates'][skip_atoms:]
+                non_overlap_features = structure['node_feat'][skip_atoms:]
+            else:
+                # No overlap (shouldn't happen, but handle gracefully)
+                non_overlap_coords = structure['coordinates']
+                non_overlap_features = structure['node_feat']
+            
+            merged_coords.append(non_overlap_coords)
+            merged_features.append(non_overlap_features)
+            atom_offset += len(non_overlap_coords)
+    
+    # Concatenate all coordinates and features
+    final_coords = np.concatenate(merged_coords, axis=0)
+    final_features = np.concatenate(merged_features, axis=0)
+    
+    # Rebuild edge_index from scratch using merged coordinates
+    # This ensures consistency and automatically handles inter-window connections
+    try:
+        edge_index, edge_attr = build_radius_graph(
+            coordinates=final_coords,
+            radius=graph_radius,
+            max_neighbors=max_neighbors,
+            sym_mode="union"
+        )
+    except Exception as e:
+        # If graph building fails, return structure without edges
+        edge_index = np.empty((2, 0), dtype=np.int64)
+        edge_attr = np.empty((0, 1), dtype=np.float32)
+    
+    # Determine final modality (use first window's detection)
+    detected_type = windows_data[0]['structure']['modality']
+    
+    result_dict = {
+        'modality': detected_type,
+        'seq_id': seq_id,
+        'sequence': seq,
+        'seq_length': len(seq),
+        'num_atoms': len(final_coords),
+        'node_feat': final_features,
+        'coordinates': final_coords,
+        'edge_index': edge_index,
+        'edge_attr': edge_attr,
+        'num_windows': len(windows_data)
     }
     
     return result_dict

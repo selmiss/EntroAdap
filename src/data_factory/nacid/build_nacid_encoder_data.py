@@ -30,6 +30,7 @@ from src.data_factory.nacid.seq_to_feature import sequence_to_features
 
 # Define consistent schema for parquet files
 # This ensures all datasets use regular 'list' type instead of 'large_list'
+# Uses unified format: 'pos' (not 'coordinates') and 'edge_feat_dist' (not 'edge_attr')
 PARQUET_SCHEMA = pa.schema([
     ('modality', pa.string()),
     ('seq_id', pa.string()),
@@ -38,9 +39,9 @@ PARQUET_SCHEMA = pa.schema([
     ('seq_length', pa.int64()),
     ('num_atoms', pa.int64()),
     ('node_feat', pa.list_(pa.list_(pa.int64()))),
-    ('coordinates', pa.list_(pa.list_(pa.float64()))),
+    ('pos', pa.list_(pa.list_(pa.float64()))),
     ('edge_index', pa.list_(pa.list_(pa.int64()))),
-    ('edge_attr', pa.list_(pa.list_(pa.float64()))),
+    ('edge_feat_dist', pa.list_(pa.list_(pa.float64()))),
 ])
 
 
@@ -110,6 +111,7 @@ def process_sequence(
             return None
         
         # Convert arrays to lists for parquet storage
+        # Use unified format: 'pos' (not 'coordinates') and 'edge_feat_dist' (not 'edge_attr')
         result = {
             'modality': data['modality'],
             'seq_id': seq_id,
@@ -118,9 +120,9 @@ def process_sequence(
             'seq_length': data['seq_length'],
             'num_atoms': data['num_atoms'],
             'node_feat': data['node_feat'].tolist(),
-            'coordinates': data['coordinates'].tolist(),
+            'pos': data['coordinates'].tolist(),
             'edge_index': data['edge_index'].tolist(),
-            'edge_attr': data['edge_attr'].tolist(),
+            'edge_feat_dist': data['edge_attr'].tolist(),
         }
         
         return result

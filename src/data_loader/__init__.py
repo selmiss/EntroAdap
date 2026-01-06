@@ -20,8 +20,8 @@ Runner scripts import these from `src.data_loader`, so we re-export here.
 """
 
 from .aa_dataset import GraphDataset, GraphBatchCollator, ModalityAwareBatchSampler
-from .octopus_collator import MultiModalDataCollator, preprocess_multimodal_dataset
-from .octopus_sft_dataset import MultiModalSFTDataset, preprocess_multimodal_sft_dataset
+from .octopus_collator import MultiModalDataCollator, preprocess_multimodal_dataset, ModalityAwareBatchSamplerForSFT
+from .octopus_sft_dataset import MultiModalSFTDataset
 
 __all__ = [
     "GraphDataset",
@@ -29,6 +29,6 @@ __all__ = [
     "ModalityAwareBatchSampler",
     "MultiModalDataCollator",
     "preprocess_multimodal_dataset",
+    "ModalityAwareBatchSamplerForSFT",
     "MultiModalSFTDataset",
-    "preprocess_multimodal_sft_dataset",
 ]

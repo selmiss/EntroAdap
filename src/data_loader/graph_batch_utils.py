@@ -22,6 +22,7 @@ def merge_protein_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str, tor
     batch_node_feat = []
     batch_edge_index = []
     batch_edge_attr = []
+    batch_edge_feat_dist = []
     batch_pos = []
     batch_indices = []
     
@@ -37,8 +38,11 @@ def merge_protein_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str, tor
         edge_index = g['edge_index'] + node_offset
         batch_edge_index.append(edge_index)
         
+        # Support both old (edge_attr) and new (edge_feat_dist) naming
         if 'edge_attr' in g:
             batch_edge_attr.append(g['edge_attr'])
+        if 'edge_feat_dist' in g:
+            batch_edge_feat_dist.append(g['edge_feat_dist'])
         
         node_offset += num_nodes
     
@@ -49,8 +53,11 @@ def merge_protein_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str, tor
         'batch': torch.tensor(batch_indices, dtype=torch.long),
     }
     
+    # Support both naming conventions for backward compatibility
     if batch_edge_attr:
         merged['edge_attr'] = torch.cat(batch_edge_attr, dim=0)
+    if batch_edge_feat_dist:
+        merged['edge_feat_dist'] = torch.cat(batch_edge_feat_dist, dim=0)
     
     return merged
 
@@ -70,6 +77,7 @@ def merge_nucleic_acid_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str
     batch_node_feat = []
     batch_edge_index = []
     batch_edge_attr = []
+    batch_edge_feat_dist = []
     batch_pos = []
     batch_indices = []
     
@@ -85,8 +93,11 @@ def merge_nucleic_acid_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str
         edge_index = g['edge_index'] + node_offset
         batch_edge_index.append(edge_index)
         
+        # Support both old (edge_attr) and new (edge_feat_dist) naming
         if 'edge_attr' in g:
             batch_edge_attr.append(g['edge_attr'])
+        if 'edge_feat_dist' in g:
+            batch_edge_feat_dist.append(g['edge_feat_dist'])
         
         node_offset += num_nodes
     
@@ -97,8 +108,11 @@ def merge_nucleic_acid_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str
         'batch': torch.tensor(batch_indices, dtype=torch.long),
     }
     
+    # Support both naming conventions for backward compatibility
     if batch_edge_attr:
         merged['edge_attr'] = torch.cat(batch_edge_attr, dim=0)
+    if batch_edge_feat_dist:
+        merged['edge_feat_dist'] = torch.cat(batch_edge_feat_dist, dim=0)
     
     return merged
 

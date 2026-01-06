@@ -83,6 +83,20 @@ class DataArguments:
         metadata={"help": "Max samples per dataset. Can be: single int (applies to all), comma-separated ints, or list in YAML"}
     )
     
+    # Runtime filtering thresholds
+    max_atoms: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum atoms per structure. Structures exceeding this will be skipped at runtime. None means no limit."}
+    )
+    max_edges: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum edges per structure. Structures exceeding this will be skipped at runtime. None means no limit."}
+    )
+    skip_on_error: bool = field(
+        default=True,
+        metadata={"help": "Skip samples that fail to load or exceed thresholds (instead of raising errors)"}
+    )
+    
     # Masking parameters
     node_mask_prob: float = field(default=0.15, metadata={"help": "Node masking probability"})
     noise_std: float = field(default=0.1, metadata={"help": "Coordinate noise std dev"})
@@ -551,6 +565,9 @@ def main():
             split='train',
             cache_dir=data_args.cache_dir,
             max_samples_per_dataset=max_samples_list,
+            max_atoms=data_args.max_atoms,
+            max_edges=data_args.max_edges,
+            skip_on_error=data_args.skip_on_error,
         )
         
         logger.info(f"Loading validation data from {data_args.val_data_path}")
@@ -559,6 +576,9 @@ def main():
             split='validation',
             cache_dir=data_args.cache_dir,
             max_samples_per_dataset=max_samples_list,
+            max_atoms=data_args.max_atoms,
+            max_edges=data_args.max_edges,
+            skip_on_error=data_args.skip_on_error,
         )
     else:
         # Auto-split validation set from training data
@@ -579,6 +599,9 @@ def main():
                 split='train',
                 cache_dir=data_args.cache_dir,
                 max_samples_per_dataset=max_samples_list,
+                max_atoms=data_args.max_atoms,
+                max_edges=data_args.max_edges,
+                skip_on_error=data_args.skip_on_error,
             )
             
             # Get the underlying HF dataset
@@ -640,6 +663,9 @@ def main():
                 split='train',
                 cache_dir=data_args.cache_dir,
                 max_samples_per_dataset=max_samples_list,
+                max_atoms=data_args.max_atoms,
+                max_edges=data_args.max_edges,
+                skip_on_error=data_args.skip_on_error,
             )
             
             # Split into train and validation

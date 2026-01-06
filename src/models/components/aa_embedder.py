@@ -34,10 +34,10 @@ class AAEmbedder(nn.Module):
     Unified all-atom feature embedder using offset-based embedding for categorical features.
     
     Protein node features (7): [atomic_number(119), atom_name(46), residue(24), chain(27), residue_id(cont), is_backbone(2), is_ca(2)]
-    Nucleic acid node features (7): [atomic_number(119), atom_name(30), nucleotide(11), chain(27), residue_id(cont), is_backbone(2), is_phosphate(2)]
+    Nucleic acid node features (7): [atomic_number(119), atom_name(30), nucleotide(10), chain(27), residue_id(cont), is_backbone(2), is_phosphate(2)]
     Molecule node features (9): [atomic_num(119), chirality(4), degree(12), charge(12), numH(10), radical(6), hybrid(6), aromatic(2), ring(2)]
     Protein edges: distance (float)
-    Nucleic acid edges: distance (float)
+    Nucleic acid edges: distance (float), stored as 'edge_feat_dist' in data
     Molecule chem edges (3): [bond_type(5), bond_stereo(6), conjugated(2)]
     Molecule spatial edges: distance (float)
     """
@@ -66,10 +66,11 @@ class AAEmbedder(nn.Module):
         self.protein_residue_proj = nn.Linear(1, hidden_dim)
         self.protein_node_combine = nn.Linear((len(protein_dims) + 1) * hidden_dim, hidden_dim)
         
-        # Nucleic acid node: 7 features with dims [119, 30, 11, 27, -1, 2, 2]
+        # Nucleic acid node: 7 features with dims [119, 30, 10, 27, -1, 2, 2]
         # IMPORTANT: keep these in sync with src/data_factory/nacid/seq_to_feature.py (ATOM_NAME_VOCAB, NUCLEOTIDE_VOCAB).
-        # Features: [atomic_number(119: 0-118), atom_name(30), nucleotide(11), chain(27), residue_id(cont), is_backbone(2), is_phosphate(2)]
-        nacid_dims = [119, 30, 11, 27, 2, 2]  # Skip continuous residue_id (index 4)
+        # Features: [atomic_number(119: 0-118), atom_name(30: 0-29), nucleotide(10: 0-9), chain(27: 0-26), residue_id(cont), is_backbone(2), is_phosphate(2)]
+        # Actual data ranges: atom_name 0-27, nucleotide 0-4, but we use vocab size to match data factory definitions
+        nacid_dims = [119, 30, 10, 27, 2, 2]  # Skip continuous residue_id (index 4)
         nacid_offset = torch.tensor([0] + nacid_dims[:-1]).cumsum(0)
         self.register_buffer('nacid_node_offset', nacid_offset)
         self.nacid_node_embed = nn.Embedding(sum(nacid_dims), hidden_dim)
@@ -127,8 +128,21 @@ class AAEmbedder(nn.Module):
         """
         Embed complete protein graph and return standardized format.
         
+        Expected data format:
+        - node_feat: [N, 7] with columns:
+            [0] atomic_number (0-118)
+            [1] atom_name (0-45, vocab size 46)
+            [2] residue (0-23, vocab size 24)
+            [3] chain (0-26, vocab size 27)
+            [4] residue_id (raw integer, NOT normalized - we normalize here)
+            [5] is_backbone (0-1)
+            [6] is_ca (0-1)
+        - pos: [N, 3] coordinates (or 'coordinates' for legacy support)
+        - edge_index: [2, E]
+        - edge_feat_dist: [E, 1] distances
+        
         Args:
-            data: Dictionary with keys: node_feat, edge_attr, edge_index, pos
+            data: Dictionary with keys: node_feat, pos (or coordinates), edge_index, edge_feat_dist
         
         Returns:
             Standardized graph dict with keys: node_emb, edge_emb, edge_index, pos
@@ -141,6 +155,8 @@ class AAEmbedder(nn.Module):
         cat_feats = node_feat[:, [0, 1, 2, 3, 5, 6]].long()
         
         # Extract continuous feature (residue_id at index 4)
+        # NOTE: In the data, residue_id is stored as raw integers (e.g., 1, 2, ..., 1000)
+        # We normalize by dividing by protein_residue_id_scale
         residue_id = node_feat[:, 4:5].float()
         if self.protein_residue_id_scale > 0:
             residue_id = residue_id / self.protein_residue_id_scale
@@ -157,14 +173,19 @@ class AAEmbedder(nn.Module):
         node_emb = self.protein_node_combine(h)
         
         # Embed edge features (distances)
-        rbf_feats = self.rbf(data['edge_attr'])  # [E, num_rbf]
+        rbf_feats = self.rbf(data['edge_feat_dist'])  # [E, num_rbf]
         edge_emb = self.dist_proj(rbf_feats)
+        
+        # Support both 'pos' and 'coordinates' field names for backward compatibility
+        pos = data.get('pos', data.get('coordinates'))
+        if pos is None:
+            raise KeyError("Expected 'pos' or 'coordinates' in protein data")
         
         return {
             'node_emb': node_emb,
             'edge_emb': edge_emb,
             'edge_index': data['edge_index'],
-            'pos': data['pos'],
+            'pos': pos,
         }
     
     def embed_nucleic_acid_graph(self, data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -173,8 +194,21 @@ class AAEmbedder(nn.Module):
         
         Similar to protein embedder but with different feature vocabularies.
         
+        Expected data format (matching src/data_factory/nacid/seq_to_feature.py):
+        - node_feat: [N, 7] with columns:
+            [0] atomic_number (0-118)
+            [1] atom_name (0-29, vocab size 30)
+            [2] nucleotide (0-9, vocab size 10)
+            [3] chain (0-26, vocab size 27)
+            [4] residue_id (raw integer, NOT normalized - we normalize here)
+            [5] is_backbone (0-1)
+            [6] is_phosphate (0-1)
+        - pos: [N, 3] coordinates
+        - edge_index: [2, E]
+        - edge_feat_dist: [E, 1] distances (named edge_feat_dist in data, not edge_attr)
+        
         Args:
-            data: Dictionary with keys: node_feat, edge_attr, edge_index, pos
+            data: Dictionary with keys: node_feat, pos, edge_index, edge_feat_dist (or edge_attr)
         
         Returns:
             Standardized graph dict with keys: node_emb, edge_emb, edge_index, pos
@@ -187,6 +221,8 @@ class AAEmbedder(nn.Module):
         cat_feats = node_feat[:, [0, 1, 2, 3, 5, 6]].long()
         
         # Extract continuous feature (residue_id at index 4)
+        # NOTE: In the data, residue_id is stored as raw integers (e.g., 1, 2, ..., 1000)
+        # We normalize by dividing by nucleic_acid_residue_id_scale
         residue_id = node_feat[:, 4:5].float()
         if self.nucleic_acid_residue_id_scale > 0:
             residue_id = residue_id / self.nucleic_acid_residue_id_scale
@@ -203,7 +239,12 @@ class AAEmbedder(nn.Module):
         node_emb = self.nacid_node_combine(h)
         
         # Embed edge features (distances)
-        rbf_feats = self.rbf(data['edge_attr'])  # [E, num_rbf]
+        # Support both 'edge_feat_dist' (from data factory) and 'edge_attr' (legacy)
+        edge_distances = data.get('edge_feat_dist', data.get('edge_attr'))
+        if edge_distances is None:
+            raise KeyError("Expected 'edge_feat_dist' or 'edge_attr' in nucleic acid data")
+        
+        rbf_feats = self.rbf(edge_distances)  # [E, num_rbf]
         edge_emb = self.dist_proj(rbf_feats)
         
         return {
@@ -240,8 +281,11 @@ class AAEmbedder(nn.Module):
         node_emb = self.mol_node_combine(h)
         
         # Determine which edge types are available
-        has_chem = 'chem_edge_feat_cat' in data and 'chem_edge_index' in data
-        has_spatial = 'edge_feat_dist' in data and 'edge_index' in data
+        # Also check that tensors are non-empty (size > 0)
+        has_chem = ('chem_edge_feat_cat' in data and 'chem_edge_index' in data 
+                    and data['chem_edge_feat_cat'].size(0) > 0)
+        has_spatial = ('edge_feat_dist' in data and 'edge_index' in data 
+                       and data['edge_feat_dist'].size(0) > 0)
         
         if not (has_chem or has_spatial):
             raise ValueError("Molecule data must contain either chemical edges or spatial edges")

@@ -41,6 +41,12 @@ class OctopusConfig:
             Intermediate dimension for FFN in fusion blocks. If None, uses 4 * fusion_hidden_dim.
         dropout (`float`, *optional*, defaults to 0.1):
             Dropout rate for fusion blocks.
+        max_atoms (`int`, *optional*, defaults to `None`):
+            Maximum atoms per structure. Structures exceeding this will be skipped at runtime.
+        max_edges (`int`, *optional*, defaults to `None`):
+            Maximum edges per structure. Structures exceeding this will be skipped at runtime.
+        skip_on_error (`bool`, *optional*, defaults to `True`):
+            Skip samples that fail to load or exceed thresholds instead of raising errors.
     """
     
     use_custom_model: bool = field(
@@ -55,7 +61,11 @@ class OctopusConfig:
     )
     modality_embedding_dim: int = field(
         default=768,
-        metadata={"help": "Dimension of modality embeddings."}
+        metadata={"help": "Dimension of modality embeddings (used for fusion blocks and projections)."}
+    )
+    encoder_hidden_dim: Optional[int] = field(
+        default=None,
+        metadata={"help": "Hidden dimension for the graph encoder. If None, uses modality_embedding_dim. Set this to match your pretrained encoder checkpoint (e.g., 256) when loading from a checkpoint with different dimension."}
     )
     num_fusion_blocks: int = field(
         default=4,
@@ -80,6 +90,32 @@ class OctopusConfig:
     max_seq_length: int = field(
         default=256,
         metadata={"help": "Maximum sequence length for multimodal training."}
+    )
+    
+    # Runtime filtering parameters
+    max_atoms: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum atoms per structure. Structures exceeding this will be skipped at runtime. None means no limit."}
+    )
+    max_edges: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum edges per structure. Structures exceeding this will be skipped at runtime. None means no limit."}
+    )
+    skip_on_error: bool = field(
+        default=True,
+        metadata={"help": "Skip samples that fail to load or exceed thresholds instead of raising errors."}
+    )
+    
+    # Encoder checkpoint for initialization
+    encoder_checkpoint_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to a pretrained encoder checkpoint directory (e.g., checkpoints/aa_encoder_multi_limited). If provided, the encoder weights will be loaded from this checkpoint before training."}
+    )
+    
+    # Full Octopus model checkpoint for loading trained models
+    octopus_checkpoint_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to a trained Octopus checkpoint directory with sharded weights (e.g., checkpoints/octopus/stage1). If provided, loads the full Octopus model (LLM + encoder + fusion blocks + gates) before training. Use this for stage-based training with different settings (e.g., unfreezing LLM, adding LoRA)."}
     )
     
     # Freezing options for training
@@ -153,8 +189,18 @@ class ScriptArguments(trl.ScriptArguments):
     """
 
     # Override the dataset_name to make it optional
-    dataset_name: Optional[str] = field(
-        default=None, metadata={"help": "Dataset name. Can be omitted if using dataset_mixture."}
+    # Note: This will be converted to support lists in __post_init__
+    dataset_name: Optional[Any] = field(
+        default=None, 
+        metadata={"help": "Dataset name or list of dataset paths (files or directories). Each directory will load all parquet files. Can be omitted if using dataset_mixture."}
+    )
+    dataset_max_samples: Optional[Any] = field(
+        default=None,
+        metadata={"help": "Maximum samples per dataset. Can be a single integer (applied to all) or a list of integers matching dataset_name length. None means no limit."}
+    )
+    eval_split_ratio: Optional[float] = field(
+        default=None,
+        metadata={"help": "Ratio of data to use for evaluation (e.g., 0.1 for 10%). If provided, the training data will be split into train and eval sets."}
     )
     dataset_mixture: Optional[dict[str, Any]] = field(
         default=None,
@@ -162,6 +208,55 @@ class ScriptArguments(trl.ScriptArguments):
     )
 
     def __post_init__(self):
+        # Validate dataset_name type (supports str or list from YAML)
+        if self.dataset_name is not None:
+            if not isinstance(self.dataset_name, (str, list)):
+                raise ValueError(
+                    f"dataset_name must be a string or list, got {type(self.dataset_name)}"
+                )
+            if isinstance(self.dataset_name, list):
+                # Validate all items are strings
+                if not all(isinstance(item, str) for item in self.dataset_name):
+                    raise ValueError(
+                        "All items in dataset_name list must be strings (file or directory paths)"
+                    )
+        
+        # Validate dataset_max_samples
+        if self.dataset_max_samples is not None:
+            if isinstance(self.dataset_max_samples, (int, float)):
+                # Single value - will be applied to all datasets
+                pass
+            elif isinstance(self.dataset_max_samples, list):
+                # List of values - must match dataset_name length
+                if self.dataset_name is None:
+                    raise ValueError("dataset_max_samples list provided but dataset_name is None")
+                if isinstance(self.dataset_name, list):
+                    if len(self.dataset_max_samples) != len(self.dataset_name):
+                        raise ValueError(
+                            f"dataset_max_samples list length ({len(self.dataset_max_samples)}) "
+                            f"must match dataset_name list length ({len(self.dataset_name)})"
+                        )
+                # Validate all items are None or integers
+                if not all(item is None or isinstance(item, (int, float)) for item in self.dataset_max_samples):
+                    raise ValueError(
+                        "All items in dataset_max_samples list must be None or integers"
+                    )
+            else:
+                raise ValueError(
+                    f"dataset_max_samples must be an integer, a list of integers, or None, got {type(self.dataset_max_samples)}"
+                )
+        
+        # Validate eval_split_ratio
+        if self.eval_split_ratio is not None:
+            if not isinstance(self.eval_split_ratio, (int, float)):
+                raise ValueError(
+                    f"eval_split_ratio must be a number between 0 and 1, got {type(self.eval_split_ratio)}"
+                )
+            if not 0 < self.eval_split_ratio < 1:
+                raise ValueError(
+                    f"eval_split_ratio must be between 0 and 1, got {self.eval_split_ratio}"
+                )
+        
         if self.dataset_name is None and self.dataset_mixture is None:
             raise ValueError("Either `dataset_name` or `dataset_mixture` must be provided")
 

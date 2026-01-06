@@ -56,7 +56,7 @@ def create_user_prompt(comments: List[Dict[str, str]]) -> str:
 def construct_instructions_from_jsonl(
     input_file: str,
     output_file: Optional[str] = None,
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5-mini",
     poll_interval: float = 5.0,
     completion_window: str = "24h",
 ) -> List[Dict[str, Any]]:

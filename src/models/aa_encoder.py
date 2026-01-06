@@ -113,13 +113,13 @@ class AAEncoder(nn.Module):
         embedded = self.embedder(data)
         
         # Encode with EGNN (modality-agnostic)
-        # EGNN expects: h (node features), pos, edge_index, e (edge features), batch
         node_emb, pos_out = self.egnn(
             h=embedded['node_emb'],
             pos=embedded['pos'],
             edge_index=embedded['edge_index'],
             e=embedded['edge_emb'],
-            batch=batch)
+            batch=batch
+        )
         
         return {
             'node_emb': node_emb,

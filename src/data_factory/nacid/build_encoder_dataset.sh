@@ -37,8 +37,8 @@ OUTPUT_DIR="$PROJECT_ROOT/data/encoder/nacid"
 mkdir -p "$OUTPUT_DIR"
 
 # Parameters
-GRAPH_RADIUS=8.0
-MAX_NEIGHBORS=24
+GRAPH_RADIUS=4.0
+MAX_NEIGHBORS=16
 MAX_SEQ_LENGTH=500       # Maximum sequence length (nucleotides)
 NUM_WORKERS=8
 BATCH_SIZE=50

@@ -1,0 +1,135 @@
+# Octopus fine-tuning configuration with MULTIPLE DATASETS
+# This config demonstrates different ways to specify datasets
+# Model configuration
+model_name_or_path: Qwen/Qwen2-0.5B  # Small but realistic Qwen2 model (~1GB)
+
+# Dataset configuration - Multiple options:
+# 
+# Option 1: List of files and directories (RECOMMENDED for flexibility)
+# Each item can be:
+#   - A directory: loads all .parquet files recursively
+#   - A specific file: loads just that file
+dataset_name:
+  - data/sft/molecule_4A/comprehensive_conversations-preprocessed_part_1.parquet
+  - data/sft/molecule_4A/detailed_structural_descriptions-preprocessed_part_1.parquet
+  - data/sft/protein/protein_sft_flat.parquet
+  - data/sft/nacid/dna_sft_part002.parquet
+  - data/sft/nacid/rna_sft_part004.parquet
+
+# Maximum samples per dataset (optional)
+# Can be:
+#   - null or omitted: no limit (use all samples)
+#   - A single integer: apply same limit to all datasets
+#   - A list: per-dataset limits (must match dataset_name length)
+# Examples:
+#   dataset_max_samples: 1000              # Limit all datasets to 1000 samples each
+#   dataset_max_samples: [500, 500, 1000, 2000, 2000]  # Per-dataset limits
+dataset_max_samples:
+  - 3000   # molecule comprehensive_conversations
+  - 3000   # molecule detailed_structural_descriptions
+  - 2000  # protein
+  - 2000  # dna
+  - 2000  # rna
+
+# Evaluation split ratio (optional)
+# If provided, the training data will be split into train and eval sets
+# Example: 0.1 means 10% of data will be used for evaluation
+eval_split_ratio: 0.1  # 10% for evaluation
+
+# Option 2: Single directory (loads ALL parquet files recursively)
+# dataset_name: data/sft
+#
+# Option 3: Single specific file
+# dataset_name: data/sft/protein/protein_sft.parquet
+#
+# Option 4: Use dataset_mixture for advanced control (weights, sampling, splits)
+# Note: dataset_mixture does NOT support directory paths yet, only HF datasets or specific files
+# dataset_mixture:
+#   datasets:
+#     - id: data/sft/protein/protein_sft.parquet
+#       weight: 0.5
+#     - id: data/sft/molecule/comprehensive_conversations-preprocessed.parquet
+#       weight: 0.3
+#     - id: data/sft/nacid/dna_sft.parquet
+#       weight: 0.2
+#   seed: 42
+#   test_split_size: 0.1
+
+# Training hyperparameters
+learning_rate: 1.0e-5
+num_train_epochs: 2  # Quick test - just 2 epochs
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16
+# Logging level for the main process
+log_level: info        # one of: debug, info, warning, error, critical
+
+# Optimization settings
+gradient_checkpointing: true  # Enable for memory efficiency
+bf16: true  # Use bf16 like production
+use_liger_kernel: false  # Test Liger integration
+
+# LoRA/PEFT configuration
+use_peft: true  # No LoRA needed when LLM is frozen
+lora_r: 8  # (ignored when use_peft: false)
+lora_alpha: 16
+lora_dropout: 0.05
+
+# DeepSpeed configuration - optional for testing
+# deepspeed: configs/deepspeed/ds_config_zero2.json
+
+# Output configuration
+output_dir: ./checkpoints/octopus/Qwen2-0.5B
+
+# Logging and evaluation
+logging_steps: 10  # Log every step for testing
+save_strategy: "no"  # Don't save checkpoints for testing
+save_total_limit: 1
+
+# Training strategy
+eval_strategy: "steps"  # Evaluate during training
+eval_steps: 100  # Evaluate every 100 steps
+
+# Reporting configuration
+# Options for report_to: ["wandb"], ["tensorboard"], ["all"], or []
+# Set to ["wandb"] to enable online Weights & Biases logging
+report_to: ["wandb"]  # Enable wandb logging
+
+# Wandb configuration (used when "wandb" in report_to)
+wandb_project: "octopus-sft"  # Your wandb project name
+run_name: "qwen2-0.5b-tiny-test"  # Specific run name (optional, auto-generated if not provided)
+# wandb_entity: "your-entity"  # Your wandb entity/team (optional)
+
+remove_unused_columns: false  # CRITICAL: Keep graph_data and multimodal columns
+
+# Octopus configuration - scaled for Qwen2-0.5B
+use_custom_model: true
+encoder_hidden_dim: 256  # Match pretrained encoder checkpoint (aa_encoder_multi_limited was trained with 256)
+modality_embedding_dim: 896  # Match Qwen2-0.5B hidden_size=896 for fusion blocks
+num_fusion_blocks: 8  # Fewer blocks for faster testing
+num_attention_heads: 14  # Match Qwen2-0.5B (it has 14 heads)
+fusion_hidden_dim: null  # defaults to modality_embedding_dim (896)
+fusion_intermediate_dim: null  # defaults to 4 * fusion_hidden_dim
+dropout: 0.1
+max_seq_length: 512  # Maximum sequence (instruction) length for multimodal training
+
+# Encoder initialization from pretrained checkpoint (optional)
+# If specified, loads the encoder weights from a pretrained checkpoint before training
+# Example: encoder_checkpoint_path: checkpoints/aa_encoder_multi_limited
+encoder_checkpoint_path: checkpoints/aa_encoder_multi_limited  # Set to checkpoint path to load pretrained encoder weights
+
+# Runtime filtering thresholds for structures
+# These filter graph structures during training (not during preprocessing)
+# Structures exceeding these limits will be automatically skipped during data loading
+# via the collator's skip_on_error mechanism (efficient, no upfront cost)
+max_atoms: 30000       # Maximum atoms per structure (null = no limit, e.g., 30000)
+max_edges: 500000       # Maximum edges per structure (null = no limit, e.g., 500000)
+skip_on_error: true   # Skip samples that fail to load or exceed thresholds
+
+# Freezing options for training - control which components to freeze
+# Training strategy: Freeze LLM, train multimodal connector components
+freeze_encoder: false       # Freeze the graph encoder (already pre-trained)
+freeze_llm: false          # Freeze the LLM completely (no LoRA)
+freeze_gates: false        # TRAIN anchor and edge gates (connector)
+freeze_fusion_blocks: false  # TRAIN fusion blocks (connector)
+freeze_projections: false  # TRAIN all projection layers (connector)
+

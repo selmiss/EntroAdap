@@ -76,7 +76,11 @@ class Octopus(PreTrainedModel):
         )
         
         # 2. Instruction projection: LLM hidden -> encoder dim
+        # Add normalization before projection to stabilize gradients
+        self.instr_norm = nn.LayerNorm(self.llm_hidden_dim)
         self.instr_proj = nn.Linear(self.llm_hidden_dim, enc_cfg.hidden_dim)
+        # Initialize with small weights for large downprojection (4096->256)
+        self._init_projection(self.instr_proj, is_downprojection=True)
         
         # 3. Anchor & Edge gates (accept projected instruction embeddings in encoder space)
         self.anchor_gate = AnchorGate(
@@ -97,8 +101,20 @@ class Octopus(PreTrainedModel):
         fusion_hidden = fusion_cfg.hidden_dim if fusion_cfg.hidden_dim is not None else enc_cfg.hidden_dim
         
         # Patch & node projection to fusion space
-        self.patch_proj = nn.Linear(enc_cfg.hidden_dim, fusion_hidden) if enc_cfg.hidden_dim != fusion_hidden else nn.Identity()
-        self.node_proj = nn.Linear(enc_cfg.hidden_dim, fusion_hidden) if enc_cfg.hidden_dim != fusion_hidden else nn.Identity()
+        if enc_cfg.hidden_dim != fusion_hidden:
+            # Add normalization before upprojection
+            self.patch_norm_pre = nn.LayerNorm(enc_cfg.hidden_dim)
+            self.node_norm_pre = nn.LayerNorm(enc_cfg.hidden_dim)
+            self.patch_proj = nn.Linear(enc_cfg.hidden_dim, fusion_hidden)
+            self.node_proj = nn.Linear(enc_cfg.hidden_dim, fusion_hidden)
+            # Initialize with scaled weights for large upprojection (256->4096)
+            self._init_projection(self.patch_proj, is_downprojection=False)
+            self._init_projection(self.node_proj, is_downprojection=False)
+        else:
+            self.patch_norm_pre = nn.Identity()
+            self.node_norm_pre = nn.Identity()
+            self.patch_proj = nn.Identity()
+            self.node_proj = nn.Identity()
         
         # 5. Fusion blocks (query=patches, KV=nodes)
         self.fusion_blocks = nn.ModuleList([
@@ -113,7 +129,42 @@ class Octopus(PreTrainedModel):
         
         # 6. Output projection to LLM space
         self.output_proj = nn.Linear(fusion_hidden, self.llm_hidden_dim)
+        # Initialize output projection with small weights
+        self._init_projection(self.output_proj, is_downprojection=False)
         self.output_norm = nn.LayerNorm(self.llm_hidden_dim)
+    
+    def _init_projection(self, linear_layer: nn.Linear, is_downprojection: bool = False):
+        """
+        Initialize projection layers with scaled weights to prevent gradient explosion.
+        
+        Uses Xavier/Glorot initialization with additional scaling for large dimension changes.
+        For downprojections (e.g., 4096->256): use smaller init for stability.
+        For upprojections (e.g., 256->4096): use smaller init and scale output.
+        
+        Args:
+            linear_layer: The linear layer to initialize
+            is_downprojection: True for downprojections, False for upprojections
+        """
+        # Xavier/Glorot uniform initialization
+        nn.init.xavier_uniform_(linear_layer.weight)
+        
+        # Additional scaling based on dimension ratio
+        in_dim = linear_layer.weight.size(1)
+        out_dim = linear_layer.weight.size(0)
+        dim_ratio = max(in_dim, out_dim) / min(in_dim, out_dim)
+        
+        # Scale down weights for large dimension changes
+        if dim_ratio > 4.0:  # Significant dimension change (e.g., 256<->4096 is 16x)
+            scale = 0.02  # Conservative scaling
+        elif dim_ratio > 2.0:
+            scale = 0.1
+        else:
+            scale = 1.0
+        
+        with torch.no_grad():
+            linear_layer.weight.mul_(scale)
+            if linear_layer.bias is not None:
+                linear_layer.bias.zero_()
 
     # ---------------------------------------------------------------------
     # HuggingFace PreTrainedModel embedding / resizing delegation
@@ -196,7 +247,9 @@ class Octopus(PreTrainedModel):
         edge_index = enc_out['edge_index']
         
         # Project instruction embeddings from LLM space to encoder space
-        instr_emb_proj = self.instr_proj(instr_emb)  # [G, enc_dim]
+        # Apply normalization before projection to stabilize gradients
+        instr_emb_norm = self.instr_norm(instr_emb)  # [G, llm_hidden_dim]
+        instr_emb_proj = self.instr_proj(instr_emb_norm)  # [G, enc_dim]
         
         # Run patching with config
         cfg = self.config_octopus.patching
@@ -242,8 +295,9 @@ class Octopus(PreTrainedModel):
         G, k_max, _ = patch_emb.shape
         N = node_emb.size(0)
         
-        # Project to fusion space
-        patch_h = self.patch_proj(patch_emb)  # [G, k_max, fusion_dim]
+        # Project to fusion space with pre-normalization
+        patch_h = self.patch_norm_pre(patch_emb)  # [G, k_max, enc_dim]
+        patch_h = self.patch_proj(patch_h)  # [G, k_max, fusion_dim]
         
         # For cross-attention KV: replicate nodes per graph or use all nodes
         # Simple approach: each graph attends to ALL nodes (batch-agnostic)
@@ -252,7 +306,8 @@ class Octopus(PreTrainedModel):
             # Build per-graph node KV: [G, N_g, fusion_dim]
             # For simplicity here, we'll stack all nodes and let mask handle it
             # (more efficient impl would gather per-graph nodes)
-            node_h = self.node_proj(node_emb).unsqueeze(0).expand(G, -1, -1)  # [G, N, fusion_dim]
+            node_h = self.node_norm_pre(node_emb)  # [N, enc_dim]
+            node_h = self.node_proj(node_h).unsqueeze(0).expand(G, -1, -1)  # [G, N, fusion_dim]
             
             # Build KV mask: [G, N] where 1=this node belongs to graph g
             kv_mask = torch.zeros(G, N, dtype=torch.bool, device=node_emb.device)
@@ -262,7 +317,8 @@ class Octopus(PreTrainedModel):
                 kv_mask = kv_mask & node_mask.bool().unsqueeze(0)
         else:
             # No batch info: all nodes attend to all nodes
-            node_h = self.node_proj(node_emb).unsqueeze(0).expand(G, -1, -1)
+            node_h = self.node_norm_pre(node_emb)  # [N, enc_dim]
+            node_h = self.node_proj(node_h).unsqueeze(0).expand(G, -1, -1)
             kv_mask = None
         
         # Prepare masks for MultiheadAttention (True=padding, False=valid)
@@ -423,6 +479,7 @@ class Octopus(PreTrainedModel):
             CausalLMOutputWithPast
         """
         # Get text embeddings
+        
         inputs_embeds = self.get_llm_embeddings(input_ids)  # [B, seq_len, llm_hidden_dim]
         B, seq_len, _ = inputs_embeds.shape
         
@@ -448,6 +505,12 @@ class Octopus(PreTrainedModel):
             instr_emb = torch.stack(instr_emb_list, dim=0)  # [G, llm_hidden_dim]
             
             # Encode and patch
+            
+            # print("graph_data keys:", graph_data["value"].keys())
+            # print("edge_feat_dist shape:", graph_data["value"]['edge_feat_dist'].shape)
+            # print("edge_index shape:", graph_data["value"]['edge_index'].shape)
+
+            # import ipdb; ipdb.set_trace()
             patch_emb, out_patch_mask, node_emb = self.encode_and_patch(
                 graph_data, instr_emb, batch
             )  # [G, k_max, enc_dim], [G, k_max], [N, enc_dim]
@@ -616,9 +679,12 @@ class Octopus(PreTrainedModel):
         # Legacy behavior: ensure all multimodal components are trainable
         trainable_modules = [
             self.encoder,
+            self.instr_norm,
             self.instr_proj,
             self.anchor_gate,
             self.edge_gate,
+            self.patch_norm_pre,
+            self.node_norm_pre,
             self.patch_proj,
             self.node_proj,
             self.fusion_blocks,
@@ -654,9 +720,12 @@ class Octopus(PreTrainedModel):
         print("Frozen fusion blocks")
     
     def freeze_projections(self):
-        """Freeze all projection layers."""
+        """Freeze all projection layers and their associated normalization layers."""
         projection_modules = [
+            self.instr_norm,
             self.instr_proj,
+            self.patch_norm_pre,
+            self.node_norm_pre,
             self.patch_proj,
             self.node_proj,
             self.output_proj,

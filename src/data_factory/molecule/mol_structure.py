@@ -387,8 +387,8 @@ def generate_2d_3d_from_smiles(smiles: str) -> Tuple[Optional[List[str]], Option
                     # Default radius=6.0 Angstroms, max_neighbors=32
                     spatial_edge_index, spatial_edge_distances = build_radius_graph(
                         coordinates_3d,
-                        radius=6.0,
-                        max_neighbors=32,
+                        radius=4.0,
+                        max_neighbors=16,
                         sym_mode="union"
                     )
                     # Add spatial edges as default edge fields in graph_2d
