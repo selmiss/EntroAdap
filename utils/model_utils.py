@@ -19,12 +19,20 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
-def get_tokenizer(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) -> PreTrainedTokenizer:
+def get_tokenizer(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig, multimodal_args=None) -> PreTrainedTokenizer:
     """Get the tokenizer for the model."""
+    tokenizer_path = model_args.model_name_or_path
+    if tokenizer_path is None and multimodal_args is not None:
+        tokenizer_path = getattr(multimodal_args, 'prepared_checkpoint_path', None) or getattr(multimodal_args, 'octopus_checkpoint_path', None)
+    
+    if tokenizer_path is None:
+        raise ValueError("Either model_name_or_path or a checkpoint path must be provided")
+    
     tokenizer = AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
+        tokenizer_path,
         revision=model_args.model_revision,
         trust_remote_code=model_args.trust_remote_code,
+        fix_mistral_regex=True,
     )
 
     if training_args.chat_template is not None:
@@ -127,25 +135,26 @@ def get_model(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) ->
 
 def load_prepared_octopus_from_checkpoint(
     checkpoint_path: str,
-    model_args: OctopusConfig,
+    model_args,
+    multimodal_config = None,
 ) -> Octopus:
     """
     Load a prepared Octopus model from a checkpoint directory.
     """
-    # Load LLM from checkpoint WITHOUT LoRA wrapper first
-    # This ensures key names match the saved checkpoint
+    if multimodal_config is None:
+        multimodal_config = model_args
+    
     dtype_value = getattr(model_args, "dtype", None) or getattr(model_args, "torch_dtype", None)
     torch_dtype = (
         dtype_value if dtype_value in ["auto", None] else getattr(torch, dtype_value)
     )
     quantization_config = get_quantization_config(model_args)
     
-    attn_implementation = model_args.attn_implementation if model_args.attn_implementation is not None else "eager"
+    attn_implementation = getattr(model_args, "attn_implementation", "eager")
     
-    # Kwargs for loading config
     config_kwargs = dict(
-        revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        revision=getattr(model_args, "model_revision", None),
+        trust_remote_code=getattr(model_args, "trust_remote_code", False),
     )
     
     # Kwargs for creating model from config (from_config only accepts these)
@@ -175,32 +184,31 @@ def load_prepared_octopus_from_checkpoint(
     else:
         # Quantization requires normal initialization
         llm_model = AutoModelForCausalLM.from_config(config=llm_config, **model_init_kwargs)
-    # Build Octopus config
     encoder_dim = (
-        model_args.encoder_hidden_dim
-        if model_args.encoder_hidden_dim is not None
-        else model_args.modality_embedding_dim
+        multimodal_config.encoder_hidden_dim
+        if multimodal_config.encoder_hidden_dim is not None
+        else multimodal_config.modality_embedding_dim
     )
     
     fusion_dim = (
-        model_args.fusion_hidden_dim
-        if model_args.fusion_hidden_dim is not None
-        else model_args.modality_embedding_dim
+        multimodal_config.fusion_hidden_dim
+        if multimodal_config.fusion_hidden_dim is not None
+        else multimodal_config.modality_embedding_dim
     )
     
     mm_config = OctopusConfig(
         encoder=EncoderConfig(
             hidden_dim=encoder_dim,
             num_layers=6,
-            dropout=model_args.dropout,
+            dropout=multimodal_config.dropout,
         ),
         patching=PatchingConfig(),
         fusion=FusionConfig(
-            num_blocks=model_args.num_fusion_blocks,
-            num_heads=model_args.num_attention_heads,
+            num_blocks=multimodal_config.num_fusion_blocks,
+            num_heads=multimodal_config.num_attention_heads,
             hidden_dim=fusion_dim,
-            intermediate_dim=model_args.fusion_intermediate_dim,
-            dropout=model_args.dropout,
+            intermediate_dim=multimodal_config.fusion_intermediate_dim,
+            dropout=multimodal_config.dropout,
         ),
     )
     
@@ -208,12 +216,11 @@ def load_prepared_octopus_from_checkpoint(
     logger.info("Creating Octopus architecture")
     multimodal_model = Octopus(llm_model=llm_model, config=mm_config)
 
-    if model_args.use_peft:
+    if getattr(model_args, "use_peft", False):
         from peft import get_peft_model
         logger.info("Applying LoRA wrapper to LLM")
         peft_config = get_peft_config(model_args)
         if peft_config is not None:
-            # Wrap the inner LLM with LoRA
             multimodal_model.llm_model = get_peft_model(multimodal_model.llm_model, peft_config)
 
     
@@ -341,8 +348,6 @@ def _load_octopus_from_checkpoint(
             dropout=multimodal_config.dropout,
         ),
         patching=PatchingConfig(
-            k_max=multimodal_config.k_max if multimodal_config.k_max is not None else 32,
-            r_max=multimodal_config.r_max if multimodal_config.r_max is not None else 64,
         ),
         fusion=FusionConfig(
             num_blocks=multimodal_config.num_fusion_blocks,
@@ -441,14 +446,31 @@ def get_custom_model(
     - Use the freezing options in multimodal_config to selectively freeze components:
       freeze_encoder, freeze_llm, freeze_gates, freeze_fusion_blocks, freeze_projections
     
+    Checkpoint Loading:
+    - prepared_checkpoint_path: Load from a prepared checkpoint using config-first approach
+    - octopus_checkpoint_path: Load from a full Octopus checkpoint with from_pretrained
+    - If neither is set, creates a new model from scratch
+    
     Args:
         model_args: Model configuration from TRL
         training_args: Training configuration
-        multimodal_config: Multi-modal specific configuration (includes freezing options)
+        multimodal_config: Multi-modal specific configuration (includes freezing options
+                          and optional checkpoint paths)
     
     Returns:
         Octopus instance with the specified configuration and freezing applied
     """
+    # Check if we should load from a prepared checkpoint (config-first loading)
+    prepared_checkpoint = getattr(multimodal_config, "prepared_checkpoint_path", None)
+    
+    if prepared_checkpoint is not None:
+        logger.info(f"Loading prepared Octopus model from checkpoint: {prepared_checkpoint}")
+        return load_prepared_octopus_from_checkpoint(
+            prepared_checkpoint,
+            model_args,
+            multimodal_config,
+        )
+    
     # Check if we should load from a full Octopus checkpoint
     octopus_checkpoint = getattr(multimodal_config, "octopus_checkpoint_path", None)
     

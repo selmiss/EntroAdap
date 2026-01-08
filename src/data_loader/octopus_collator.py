@@ -42,7 +42,7 @@ class MultiModalDataCollator:
     def __post_init__(self):
         """Set default structure tokens if not provided."""
         if self.structure_tokens is None:
-            self.structure_tokens = ["<STRUCTURE>"]
+            self.structure_tokens = ["<STRUCTURE>", "<mol>", "<DNA>", "<RNA>"]
     
     @staticmethod
     def _as_tensor(x: Any, *, dtype: torch.dtype) -> torch.Tensor:
@@ -424,69 +424,81 @@ def preprocess_multimodal_dataset(
                     break
             
             # Fallback: Insert structure token at end of user query if not found
+            # BUT ONLY if this sample actually has graph data!
             if patch_pos == -1 and insert_structure_if_missing:
-                # Find end of last user message (before first assistant response)
-                messages = examples["messages"][idx]
-                first_assistant_idx = None
-                last_user_idx = None
-                for i, msg in enumerate(messages):
-                    if isinstance(msg, dict):
-                        if msg.get("role") == "user":
-                            last_user_idx = i
-                        elif msg.get("role") == "assistant":
-                            first_assistant_idx = i
-                            break
+                # Check if this sample has graph data
+                has_graph = False
+                if 'node_feat' in examples and idx < len(examples['node_feat']):
+                    # Raw column format
+                    has_graph = examples['node_feat'][idx] is not None
+                elif 'graph_data' in examples and idx < len(examples['graph_data']):
+                    # Nested graph_data format
+                    has_graph = examples['graph_data'][idx] is not None
                 
-                if last_user_idx is not None:
-                    # Reconstruct text up to and including last user message
-                    user_messages = messages[:last_user_idx + 1]
-                    user_text = tokenizer.apply_chat_template(
-                        user_messages,
-                        tokenize=False,
-                        add_generation_prompt=False,
-                    )
+                # Only insert structure token if graph data exists
+                if has_graph:
+                    # Find end of last user message (before first assistant response)
+                    messages = examples["messages"][idx]
+                    first_assistant_idx = None
+                    last_user_idx = None
+                    for i, msg in enumerate(messages):
+                        if isinstance(msg, dict):
+                            if msg.get("role") == "user":
+                                last_user_idx = i
+                            elif msg.get("role") == "assistant":
+                                first_assistant_idx = i
+                                break
                     
-                    # Insert structure token before closing the user message
-                    # For ChatML format: insert before </im_end>
-                    if "<|im_end|>" in user_text:
-                        # Insert before the last </im_end> (which closes the user message)
-                        parts = user_text.rsplit("<|im_end|>", 1)
-                        modified_user_text = parts[0] + f" {structure_tokens[0]}<|im_end|>" + parts[1] if len(parts) > 1 else parts[0] + f" {structure_tokens[0]}"
-                    else:
-                        # Fallback: append to end
-                        modified_user_text = user_text + f" {structure_tokens[0]}"
-                    
-                    # Re-tokenize with the structure token
-                    # Reconstruct full text with modified user part
-                    if first_assistant_idx is not None:
-                        assistant_messages = messages[last_user_idx + 1:]
-                        assistant_text = tokenizer.apply_chat_template(
-                            assistant_messages,
+                    if last_user_idx is not None:
+                        # Reconstruct text up to and including last user message
+                        user_messages = messages[:last_user_idx + 1]
+                        user_text = tokenizer.apply_chat_template(
+                            user_messages,
                             tokenize=False,
                             add_generation_prompt=False,
                         )
-                        full_modified_text = modified_user_text + assistant_text
-                    else:
-                        full_modified_text = modified_user_text
-                    
-                    # Re-tokenize
-                    modified_tokenized = tokenizer(
-                        full_modified_text,
-                        truncation=True,
-                        max_length=max_seq_length,
-                        padding=False,
-                    )
-                    
-                    # Update input_ids, labels, AND attention_mask for this example
-                    tokenized["input_ids"][idx] = modified_tokenized["input_ids"]
-                    tokenized["labels"][idx] = modified_tokenized["input_ids"][:]
-                    if "attention_mask" in tokenized and "attention_mask" in modified_tokenized:
-                        tokenized["attention_mask"][idx] = modified_tokenized["attention_mask"]
-                    
-                    # Find the structure token position in modified sequence
-                    structure_token_id = tokenizer.convert_tokens_to_ids(structure_tokens[0])
-                    if structure_token_id in modified_tokenized["input_ids"]:
-                        patch_pos = modified_tokenized["input_ids"].index(structure_token_id)
+                        
+                        # Insert structure token before closing the user message
+                        # For ChatML format: insert before </im_end>
+                        if "<|im_end|>" in user_text:
+                            # Insert before the last </im_end> (which closes the user message)
+                            parts = user_text.rsplit("<|im_end|>", 1)
+                            modified_user_text = parts[0] + f" {structure_tokens[0]}<|im_end|>" + parts[1] if len(parts) > 1 else parts[0] + f" {structure_tokens[0]}"
+                        else:
+                            # Fallback: append to end
+                            modified_user_text = user_text + f" {structure_tokens[0]}"
+                        
+                        # Re-tokenize with the structure token
+                        # Reconstruct full text with modified user part
+                        if first_assistant_idx is not None:
+                            assistant_messages = messages[last_user_idx + 1:]
+                            assistant_text = tokenizer.apply_chat_template(
+                                assistant_messages,
+                                tokenize=False,
+                                add_generation_prompt=False,
+                            )
+                            full_modified_text = modified_user_text + assistant_text
+                        else:
+                            full_modified_text = modified_user_text
+                        
+                        # Re-tokenize
+                        modified_tokenized = tokenizer(
+                            full_modified_text,
+                            truncation=True,
+                            max_length=max_seq_length,
+                            padding=False,
+                        )
+                        
+                        # Update input_ids, labels, AND attention_mask for this example
+                        tokenized["input_ids"][idx] = modified_tokenized["input_ids"]
+                        tokenized["labels"][idx] = modified_tokenized["input_ids"][:]
+                        if "attention_mask" in tokenized and "attention_mask" in modified_tokenized:
+                            tokenized["attention_mask"][idx] = modified_tokenized["attention_mask"]
+                        
+                        # Find the structure token position in modified sequence
+                        structure_token_id = tokenizer.convert_tokens_to_ids(structure_tokens[0])
+                        if structure_token_id in modified_tokenized["input_ids"]:
+                            patch_pos = modified_tokenized["input_ids"].index(structure_token_id)
             
             patch_position_batch.append(patch_pos)
         tokenized["patch_position"] = patch_position_batch
@@ -1139,65 +1151,77 @@ def preprocess_inference_dataset(
                     break
             
             # Fallback: Insert structure token at end of user query if not found
+            # BUT ONLY if this sample actually has graph data!
             if patch_pos == -1 and insert_structure_if_missing:
-                messages = examples["messages"][idx]
+                # Check if this sample has graph data
+                has_graph = False
+                if 'node_feat' in examples and idx < len(examples['node_feat']):
+                    # Raw column format
+                    has_graph = examples['node_feat'][idx] is not None
+                elif 'graph_data' in examples and idx < len(examples['graph_data']):
+                    # Nested graph_data format
+                    has_graph = examples['graph_data'][idx] is not None
                 
-                # Find last user message
-                last_user_idx = None
-                for i, msg in enumerate(messages):
-                    if isinstance(msg, dict) and msg.get("role") == "user":
-                        last_user_idx = i
-                
-                if last_user_idx is not None:
-                    # Reconstruct prompt messages with structure token
-                    prompt_messages = [msg for msg in messages if msg.get("role") != "assistant"]
+                # Only insert structure token if graph data exists
+                if has_graph:
+                    messages = examples["messages"][idx]
                     
-                    # Get last user message text and insert structure token
-                    user_text = tokenizer.apply_chat_template(
-                        prompt_messages[:last_user_idx + 1],
-                        tokenize=False,
-                        add_generation_prompt=False,
-                    )
+                    # Find last user message
+                    last_user_idx = None
+                    for i, msg in enumerate(messages):
+                        if isinstance(msg, dict) and msg.get("role") == "user":
+                            last_user_idx = i
                     
-                    # Insert structure token before closing tag
-                    if "<|im_end|>" in user_text:
-                        parts = user_text.rsplit("<|im_end|>", 1)
-                        modified_user_text = parts[0] + f" {structure_tokens[0]}<|im_end|>" + (parts[1] if len(parts) > 1 else "")
-                    else:
-                        modified_user_text = user_text + f" {structure_tokens[0]}"
-                    
-                    # Complete prompt with generation prompt
-                    if last_user_idx < len(prompt_messages) - 1:
-                        remaining_messages = prompt_messages[last_user_idx + 1:]
-                        remaining_text = tokenizer.apply_chat_template(
-                            remaining_messages,
+                    if last_user_idx is not None:
+                        # Reconstruct prompt messages with structure token
+                        prompt_messages = [msg for msg in messages if msg.get("role") != "assistant"]
+                        
+                        # Get last user message text and insert structure token
+                        user_text = tokenizer.apply_chat_template(
+                            prompt_messages[:last_user_idx + 1],
                             tokenize=False,
-                            add_generation_prompt=True,
+                            add_generation_prompt=False,
                         )
-                        full_modified_text = modified_user_text + remaining_text
-                    else:
-                        # Add generation prompt to modified text
-                        full_modified_text = modified_user_text
-                        if not full_modified_text.endswith("<|im_start|>assistant\n"):
-                            full_modified_text += "<|im_start|>assistant\n"
-                    
-                    # Re-tokenize
-                    modified_tokenized = tokenizer(
-                        full_modified_text,
-                        truncation=True,
-                        max_length=max_seq_length,
-                        padding=False,
-                    )
-                    
-                    # Update input_ids and attention_mask for this example
-                    tokenized["input_ids"][idx] = modified_tokenized["input_ids"]
-                    if "attention_mask" in tokenized and "attention_mask" in modified_tokenized:
-                        tokenized["attention_mask"][idx] = modified_tokenized["attention_mask"]
-                    
-                    # Find the structure token position
-                    structure_token_id = tokenizer.convert_tokens_to_ids(structure_tokens[0])
-                    if structure_token_id in modified_tokenized["input_ids"]:
-                        patch_pos = modified_tokenized["input_ids"].index(structure_token_id)
+                        
+                        # Insert structure token before closing tag
+                        if "<|im_end|>" in user_text:
+                            parts = user_text.rsplit("<|im_end|>", 1)
+                            modified_user_text = parts[0] + f" {structure_tokens[0]}<|im_end|>" + (parts[1] if len(parts) > 1 else "")
+                        else:
+                            modified_user_text = user_text + f" {structure_tokens[0]}"
+                        
+                        # Complete prompt with generation prompt
+                        if last_user_idx < len(prompt_messages) - 1:
+                            remaining_messages = prompt_messages[last_user_idx + 1:]
+                            remaining_text = tokenizer.apply_chat_template(
+                                remaining_messages,
+                                tokenize=False,
+                                add_generation_prompt=True,
+                            )
+                            full_modified_text = modified_user_text + remaining_text
+                        else:
+                            # Add generation prompt to modified text
+                            full_modified_text = modified_user_text
+                            if not full_modified_text.endswith("<|im_start|>assistant\n"):
+                                full_modified_text += "<|im_start|>assistant\n"
+                        
+                        # Re-tokenize
+                        modified_tokenized = tokenizer(
+                            full_modified_text,
+                            truncation=True,
+                            max_length=max_seq_length,
+                            padding=False,
+                        )
+                        
+                        # Update input_ids and attention_mask for this example
+                        tokenized["input_ids"][idx] = modified_tokenized["input_ids"]
+                        if "attention_mask" in tokenized and "attention_mask" in modified_tokenized:
+                            tokenized["attention_mask"][idx] = modified_tokenized["attention_mask"]
+                        
+                        # Find the structure token position
+                        structure_token_id = tokenizer.convert_tokens_to_ids(structure_tokens[0])
+                        if structure_token_id in modified_tokenized["input_ids"]:
+                            patch_pos = modified_tokenized["input_ids"].index(structure_token_id)
             
             patch_position_batch.append(patch_pos)
         

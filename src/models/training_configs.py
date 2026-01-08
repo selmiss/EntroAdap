@@ -117,6 +117,10 @@ class OctopusConfig:
         default=None,
         metadata={"help": "Path to a trained Octopus checkpoint directory with sharded weights (e.g., checkpoints/octopus/stage1). If provided, loads the full Octopus model (LLM + encoder + fusion blocks + gates) before training. Use this for stage-based training with different settings (e.g., unfreezing LLM, adding LoRA)."}
     )
+    prepared_checkpoint_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to a prepared Octopus checkpoint directory. Uses config-first loading (from_config + load_state_dict). Alternative to octopus_checkpoint_path."}
+    )
     
     # Freezing options for training
     freeze_encoder: bool = field(
@@ -194,6 +198,14 @@ class ScriptArguments(trl.ScriptArguments):
         default=None, 
         metadata={"help": "Dataset name or list of dataset paths (files or directories). Each directory will load all parquet files. Can be omitted if using dataset_mixture."}
     )
+    dataset_train_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to training file. Use with dataset_eval_file for pre-split datasets."}
+    )
+    dataset_eval_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to evaluation file. Use with dataset_train_file for pre-split datasets."}
+    )
     dataset_max_samples: Optional[Any] = field(
         default=None,
         metadata={"help": "Maximum samples per dataset. Can be a single integer (applied to all) or a list of integers matching dataset_name length. None means no limit."}
@@ -208,7 +220,12 @@ class ScriptArguments(trl.ScriptArguments):
     )
 
     def __post_init__(self):
-        # Validate dataset_name type (supports str or list from YAML)
+        if self.dataset_train_file is not None or self.dataset_eval_file is not None:
+            if self.dataset_train_file is None or self.dataset_eval_file is None:
+                raise ValueError("Both dataset_train_file and dataset_eval_file must be specified together")
+            if self.dataset_name is not None or self.dataset_mixture is not None:
+                raise ValueError("Cannot use dataset_train_file/dataset_eval_file with dataset_name or dataset_mixture")
+        
         if self.dataset_name is not None:
             if not isinstance(self.dataset_name, (str, list)):
                 raise ValueError(
@@ -257,8 +274,8 @@ class ScriptArguments(trl.ScriptArguments):
                     f"eval_split_ratio must be between 0 and 1, got {self.eval_split_ratio}"
                 )
         
-        if self.dataset_name is None and self.dataset_mixture is None:
-            raise ValueError("Either `dataset_name` or `dataset_mixture` must be provided")
+        if self.dataset_name is None and self.dataset_mixture is None and self.dataset_train_file is None:
+            raise ValueError("Either `dataset_name`, `dataset_mixture`, or `dataset_train_file/dataset_eval_file` must be provided")
 
         if self.dataset_mixture is not None:
             if not isinstance(self.dataset_mixture, dict) or "datasets" not in self.dataset_mixture:
@@ -383,6 +400,10 @@ class SFTConfig(trl.SFTConfig):
     wandb_run_group: Optional[str] = field(
         default=None,
         metadata={"help": ("The group to store runs under.")},
+    )
+    compute_text_metrics: bool = field(
+        default=False,
+        metadata={"help": "Whether to compute NLP metrics (BLEU-2, BLEU-4, ROUGE-1, ROUGE-2, ROUGE-L, METEOR) during evaluation."},
     )
 
 

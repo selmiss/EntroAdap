@@ -146,6 +146,18 @@ def _load_parquet_files_from_paths(paths: List[str], max_samples_list: List = No
     return datasets_list
 
 
+def _load_single_file(file_path: str) -> datasets.Dataset:
+    if file_path.endswith('.jsonl') or file_path.endswith('.json'):
+        ds = datasets.load_dataset('json', data_files=file_path, split='train')
+    elif file_path.endswith('.csv'):
+        ds = datasets.load_dataset('csv', data_files=file_path, split='train')
+    elif file_path.endswith('.parquet'):
+        ds = datasets.load_dataset('parquet', data_files=file_path, split='train')
+    else:
+        ds = datasets.load_dataset('text', data_files=file_path, split='train')
+    return ds
+
+
 def get_dataset(args: ScriptArguments) -> DatasetDict:
     """Load a dataset or a mixture of datasets based on the configuration.
 
@@ -155,6 +167,15 @@ def get_dataset(args: ScriptArguments) -> DatasetDict:
     Returns:
         DatasetDict: The loaded datasets.
     """
+    if args.dataset_train_file is not None and args.dataset_eval_file is not None:
+        logger.info(f"Loading pre-split datasets: train={args.dataset_train_file}, eval={args.dataset_eval_file}")
+        
+        train_ds = _load_single_file(args.dataset_train_file)
+        eval_ds = _load_single_file(args.dataset_eval_file)
+        
+        logger.info(f"Loaded {len(train_ds):,} training samples and {len(eval_ds):,} evaluation samples")
+        return DatasetDict({"train": train_ds, "test": eval_ds})
+    
     if args.dataset_name and not args.dataset_mixture:
         logger.info(f"Loading dataset: {args.dataset_name}")
         

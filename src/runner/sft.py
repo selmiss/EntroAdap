@@ -6,6 +6,8 @@ import logging
 import os
 import sys
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import datasets
 import transformers
 from transformers import set_seed
@@ -70,7 +72,7 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     if script_args.dataset_train_split in dataset:
         print_modality_statistics(dataset[script_args.dataset_train_split], "Training Dataset")
     
-    tokenizer = get_tokenizer(model_args, training_args)
+    tokenizer = get_tokenizer(model_args, training_args, multimodal_args)
     
     # Load model + PEFT config (standard LLM vs custom multimodal)
     model, peft_config = get_model_and_peft_config(model_args, training_args, multimodal_args)
@@ -145,16 +147,25 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     # Use custom trainer for multimodal, standard for text-only
     trainer_class = MultiModalSFTTrainer if use_multimodal else SFTTrainer
     
-    trainer = trainer_class(
-        model=model,
-        args=training_args,
-        train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=(dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None),
-        processing_class=tokenizer,
-        data_collator=data_collator,
-        peft_config=peft_config,
-        callbacks=get_callbacks(training_args, model_args),
-    )
+    # Prepare trainer kwargs
+    trainer_kwargs = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": dataset[script_args.dataset_train_split],
+        "eval_dataset": (dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None),
+        "processing_class": tokenizer,
+        "data_collator": data_collator,
+        "peft_config": peft_config,
+        "callbacks": get_callbacks(training_args, model_args),
+    }
+    
+    # Add compute_text_metrics flag for MultiModalSFTTrainer
+    if use_multimodal and hasattr(training_args, 'compute_text_metrics'):
+        trainer_kwargs["compute_text_metrics"] = training_args.compute_text_metrics
+        if training_args.compute_text_metrics:
+            logger.info("Text metrics (BLEU, ROUGE, METEOR) will be computed during evaluation")
+    
+    trainer = trainer_class(**trainer_kwargs)
 
     ###############
     # Training loop
