@@ -640,6 +640,281 @@ def preprocess_multimodal_dataset(
     return processed_dataset
 
 
+@dataclass
+class MultiModalInferenceCollator:
+    """
+    Collates batches with text and graph structures for Octopus inference.
+    
+    Similar to MultiModalDataCollator but for generation:
+    - No labels needed (model generates the response)
+    - Supports same graph data formats
+    - Preserves reference data for evaluation
+    """
+    
+    tokenizer: PreTrainedTokenizerBase
+    padding: Union[bool, str, PaddingStrategy] = True
+    max_length: Optional[int] = None
+    pad_to_multiple_of: Optional[int] = None
+    return_tensors: str = "pt"
+    max_instr_positions: int = 32  # Max instruction positions to keep per sample
+    structure_tokens: List[str] = None  # List of structure tokens to try
+    
+    def __post_init__(self):
+        """Set default structure tokens if not provided."""
+        if self.structure_tokens is None:
+            self.structure_tokens = ["<STRUCTURE>"]
+    
+    @staticmethod
+    def _as_tensor(x: Any, *, dtype: torch.dtype) -> torch.Tensor:
+        """Convert nested python / numpy structures to torch tensors."""
+        if x is None:
+            raise ValueError("Graph field is None; cannot convert to tensor.")
+        if isinstance(x, torch.Tensor):
+            return x.to(dtype=dtype)
+        return torch.tensor(x, dtype=dtype)
+    
+    @staticmethod
+    def _normalize_edge_index(ei: torch.Tensor) -> torch.Tensor:
+        """Ensure edge_index shape is [2, E]."""
+        if ei.dim() != 2:
+            raise ValueError(f"edge_index must be 2D, got shape={tuple(ei.shape)}")
+        if ei.size(0) == 2:
+            return ei
+        if ei.size(1) == 2:
+            return ei.t().contiguous()
+        raise ValueError(f"edge_index must be [2, E] or [E, 2], got shape={tuple(ei.shape)}")
+    
+    def _pad_text_features(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Pad text sequences and return batch."""
+        text_features = []
+        
+        for f in features:
+            text_feat = {
+                "input_ids": f["input_ids"],
+                "attention_mask": f.get("attention_mask", [1] * len(f["input_ids"])),
+            }
+            text_features.append(text_feat)
+        
+        # Use tokenizer to pad input_ids and attention_mask
+        padding_strategy = 'longest' if self.padding is True else self.padding
+        batch = self.tokenizer.pad(
+            text_features,
+            padding=padding_strategy,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors=self.return_tensors,
+        )
+        
+        return batch
+    
+    def _collate_graph_data(self, features: List[Dict[str, Any]]) -> Optional[tuple]:
+        """Collate graph structures from multiple examples (same as training)."""
+        # Check if we have raw graph columns (HF dataset format)
+        has_raw_columns = (
+            len(features) > 0 and 
+            'modality' in features[0] and 
+            'node_feat' in features[0] and 
+            'pos' in features[0]
+        )
+        
+        if has_raw_columns:
+            graph_values = []
+            graph_indices = []
+            modalities = []
+            
+            for i, f in enumerate(features):
+                if f.get('node_feat') is not None and f.get('pos') is not None:
+                    modalities.append(f['modality'])
+                    graph_indices.append(i)
+                    
+                    value: Dict[str, torch.Tensor] = {
+                        "node_feat": self._as_tensor(f["node_feat"], dtype=torch.float32),
+                        "pos": self._as_tensor(f["pos"], dtype=torch.float32),
+                    }
+                    
+                    if "edge_index" in f and f["edge_index"] is not None:
+                        ei = self._as_tensor(f["edge_index"], dtype=torch.long)
+                        if ei.numel() > 0:
+                            value["edge_index"] = self._normalize_edge_index(ei)
+                    
+                    if "edge_attr" in f and f["edge_attr"] is not None:
+                        value["edge_attr"] = self._as_tensor(f["edge_attr"], dtype=torch.float32)
+                    
+                    if "edge_feat_dist" in f and f["edge_feat_dist"] is not None:
+                        value["edge_feat_dist"] = self._as_tensor(f["edge_feat_dist"], dtype=torch.float32)
+                    
+                    if "chem_edge_index" in f and f["chem_edge_index"] is not None:
+                        cei = self._as_tensor(f["chem_edge_index"], dtype=torch.long)
+                        if cei.numel() > 0:
+                            value["chem_edge_index"] = self._normalize_edge_index(cei)
+                    
+                    if "chem_edge_feat_cat" in f and f["chem_edge_feat_cat"] is not None:
+                        value["chem_edge_feat_cat"] = self._as_tensor(f["chem_edge_feat_cat"], dtype=torch.long)
+                    
+                    graph_values.append(value)
+            
+            if not graph_values:
+                return None
+            
+            if len(set(modalities)) > 1:
+                modality_counts = {}
+                for m in modalities:
+                    modality_counts[m] = modality_counts.get(m, 0) + 1
+                raise ValueError(
+                    f"Mixed modalities in batch not supported. Found: {modality_counts}. "
+                    f"Ensure batches contain only one modality."
+                )
+            
+            modality = modalities[0]
+        else:
+            # Pre-built graph_data dicts (backward compatibility)
+            graphs = []
+            graph_indices = []
+            for i, f in enumerate(features):
+                if 'graph_data' in f and f['graph_data'] is not None:
+                    graphs.append(f['graph_data'])
+                    graph_indices.append(i)
+            
+            if not graphs:
+                return None
+            
+            modalities = [g['modality'] for g in graphs]
+            if len(set(modalities)) > 1:
+                modality_counts = {}
+                for m in modalities:
+                    modality_counts[m] = modality_counts.get(m, 0) + 1
+                raise ValueError(f"Mixed modalities in batch not supported. Found: {modality_counts}")
+            
+            modality = modalities[0]
+            graph_values = [g['value'] for g in graphs]
+            
+            # Convert to tensors
+            normalized_values: List[Dict[str, torch.Tensor]] = []
+            for gv in graph_values:
+                if not isinstance(gv, dict):
+                    raise ValueError(f"graph_data['value'] must be a dict, got {type(gv)}")
+                
+                out: Dict[str, torch.Tensor] = {}
+                out["node_feat"] = self._as_tensor(gv["node_feat"], dtype=torch.float32)
+                out["pos"] = self._as_tensor(gv["pos"], dtype=torch.float32)
+                
+                if "edge_index" in gv and gv["edge_index"] is not None:
+                    ei = self._as_tensor(gv["edge_index"], dtype=torch.long)
+                    out["edge_index"] = self._normalize_edge_index(ei)
+                
+                if "edge_attr" in gv and gv["edge_attr"] is not None:
+                    out["edge_attr"] = self._as_tensor(gv["edge_attr"], dtype=torch.float32)
+                
+                if "edge_feat_dist" in gv and gv["edge_feat_dist"] is not None:
+                    out["edge_feat_dist"] = self._as_tensor(gv["edge_feat_dist"], dtype=torch.float32)
+                
+                if "chem_edge_index" in gv and gv["chem_edge_index"] is not None:
+                    cei = self._as_tensor(gv["chem_edge_index"], dtype=torch.long)
+                    out["chem_edge_index"] = self._normalize_edge_index(cei)
+                
+                if "chem_edge_feat_cat" in gv and gv["chem_edge_feat_cat"] is not None:
+                    out["chem_edge_feat_cat"] = self._as_tensor(gv["chem_edge_feat_cat"], dtype=torch.long)
+                
+                normalized_values.append(out)
+            
+            graph_values = normalized_values
+        
+        # Merge graphs using modality-specific logic
+        if modality == 'protein':
+            if any("edge_index" not in gv for gv in graph_values):
+                raise ValueError("Protein modality requires `edge_index` in graph_data['value'].")
+            merged = merge_protein_graphs(graph_values)
+        else:  # molecule, DNA, RNA
+            merged = merge_molecule_graphs(graph_values)
+        
+        batched_graph = {
+            'modality': modality,
+            'value': merged,
+        }
+        
+        batch_tensor = merged['batch']
+        
+        return batched_graph, batch_tensor, graph_indices
+    
+    def _add_instr_positions(self, batch: Dict[str, Any], features: List[Dict[str, Any]]) -> None:
+        """Add padded instruction positions to batch."""
+        if not any(('instr_positions' in f) or ('instr_len' in f) for f in features):
+            return
+        
+        instr_pos_list = []
+        for f in features:
+            if 'instr_positions' in f:
+                pos = f.get('instr_positions', [-1])
+            else:
+                instr_len = int(f.get('instr_len', 0) or 0)
+                pos = list(range(min(instr_len, self.max_instr_positions))) if instr_len > 0 else [-1]
+            pos = pos[:self.max_instr_positions]
+            instr_pos_list.append(pos)
+        
+        max_len = max(len(p) for p in instr_pos_list)
+        
+        padded_positions = []
+        for pos in instr_pos_list:
+            padded = pos + [-1] * (max_len - len(pos))
+            padded_positions.append(padded)
+        
+        batch['instr_positions'] = torch.tensor(padded_positions, dtype=torch.long)
+    
+    def _add_patch_positions(self, batch: Dict[str, Any], features: List[Dict[str, Any]]) -> None:
+        """Add patch positions to batch."""
+        if not any('patch_position' in f for f in features):
+            return
+        
+        patch_pos_list = []
+        for f in features:
+            pos = f.get('patch_position', -1)
+            patch_pos_list.append(pos)
+        
+        batch['patch_positions'] = torch.tensor(patch_pos_list, dtype=torch.long).unsqueeze(-1)
+    
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Collate a batch of examples for inference.
+        
+        Returns batch compatible with Octopus.forward():
+        - input_ids: [B, seq_len]
+        - attention_mask: [B, seq_len]
+        - graph_data: {'modality': str, 'value': {...}} (if graphs present)
+        - batch: [N] node-to-graph assignment (if graphs present)
+        - instr_positions: [B, max_instr_len] (if present)
+        - patch_positions: [B, 1] (if present)
+        
+        Also preserves reference data for evaluation:
+        - reference_text: List of expected responses (if present)
+        - sample_ids: List of sample identifiers (if present)
+        """
+        # Pad text features (input_ids, attention_mask)
+        batch = self._pad_text_features(features)
+        
+        # Collate graph data if present
+        graph_result = self._collate_graph_data(features)
+        if graph_result is not None:
+            graph_data, batch_tensor, graph_indices = graph_result
+            batch['graph_data'] = graph_data
+            batch['batch'] = batch_tensor
+            batch['_graph_indices'] = graph_indices
+        
+        # Add instruction positions
+        self._add_instr_positions(batch, features)
+        
+        # Add patch positions
+        self._add_patch_positions(batch, features)
+        
+        # Preserve reference data for evaluation (not used in forward pass)
+        if 'reference_text' in features[0]:
+            batch['reference_text'] = [f.get('reference_text', '') for f in features]
+        
+        if 'sample_id' in features[0]:
+            batch['sample_id'] = [f.get('sample_id', '') for f in features]
+        
+        return batch
+
+
 class ModalityAwareBatchSamplerForSFT(Sampler):
     """
     Batch sampler that ensures all samples in a batch have the same modality.
@@ -760,3 +1035,222 @@ class ModalityAwareBatchSamplerForSFT(Sampler):
     def set_epoch(self, epoch: int):
         """Set epoch for deterministic shuffling."""
         self.epoch = epoch
+
+
+def preprocess_inference_dataset(
+    dataset: DatasetDict,
+    tokenizer: PreTrainedTokenizerBase,
+    split: str,
+    max_seq_length: int = 2048,
+    structure_tokens: List[str] = None,
+    insert_structure_if_missing: bool = True,
+) -> DatasetDict:
+    """
+    Preprocess multimodal dataset for inference by tokenizing prompts only.
+    
+    Similar to preprocess_multimodal_dataset but:
+    1. Removes the last assistant message from messages
+    2. Tokenizes only the prompt (system + user messages)
+    3. No labels are created (model will generate the response)
+    4. Preserves the last assistant message as reference_text for evaluation
+    5. Finds structure token positions for patch injection
+    6. Computes instruction positions (full prompt)
+    7. Preserves graph_data and other fields from dataset
+    
+    Args:
+        dataset: Dataset dictionary containing the data
+        tokenizer: Tokenizer to use for processing
+        split: Split name to process (e.g., "test")
+        max_seq_length: Maximum sequence length for truncation
+        structure_tokens: List of structure tokens to search for
+        insert_structure_if_missing: If True, insert structure token at end of user query when not found
+    
+    Returns:
+        Processed dataset with tokenized prompts, patch_position, and reference texts
+    """
+    if structure_tokens is None:
+        structure_tokens = ["<STRUCTURE>"]
+    
+    def _preprocess_batch(examples):
+        """Tokenize prompts and prepare for inference while preserving multimodal fields."""
+        # Check if examples have 'messages' or if they're already tokenized
+        if 'messages' not in examples and 'input_ids' in examples:
+            # Already preprocessed, just return
+            return examples
+        
+        # Process each example to extract prompt and reference
+        prompts = []
+        references = []
+        sample_ids = []
+        
+        for idx, messages in enumerate(examples["messages"]):
+            # Find last assistant message for reference
+            last_assistant_msg = None
+            prompt_messages = []
+            
+            for msg in messages:
+                if isinstance(msg, dict):
+                    if msg.get("role") == "assistant":
+                        last_assistant_msg = msg.get("content", "")
+                    else:
+                        prompt_messages.append(msg)
+            
+            # If all messages including assistant, remove last assistant
+            if last_assistant_msg is None:
+                # No assistant message found, use all messages as prompt
+                prompt_messages = messages
+                last_assistant_msg = ""
+            
+            # Build prompt with generation prompt
+            prompt_text = tokenizer.apply_chat_template(
+                prompt_messages,
+                tokenize=False,
+                add_generation_prompt=True,  # Add assistant header for generation
+            )
+            
+            prompts.append(prompt_text)
+            references.append(last_assistant_msg)
+            
+            # Create sample ID if available
+            if 'id' in examples:
+                sample_ids.append(examples['id'][idx])
+            elif 'sample_id' in examples:
+                sample_ids.append(examples['sample_id'][idx])
+            else:
+                sample_ids.append(f"sample_{idx}")
+        
+        # Tokenize prompts
+        tokenized = tokenizer(
+            prompts,
+            truncation=True,
+            max_length=max_seq_length,
+            padding=False,  # Padding handled by collator
+        )
+        
+        # Find <STRUCTURE> token position for patch injection
+        patch_position_batch: List[int] = []
+        for idx, input_ids in enumerate(tokenized["input_ids"]):
+            # Try each structure token in the list
+            patch_pos = -1
+            for structure_token in structure_tokens:
+                structure_token_id = tokenizer.convert_tokens_to_ids(structure_token)
+                if structure_token_id is not None and structure_token_id in input_ids:
+                    patch_pos = input_ids.index(structure_token_id)
+                    break
+            
+            # Fallback: Insert structure token at end of user query if not found
+            if patch_pos == -1 and insert_structure_if_missing:
+                messages = examples["messages"][idx]
+                
+                # Find last user message
+                last_user_idx = None
+                for i, msg in enumerate(messages):
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        last_user_idx = i
+                
+                if last_user_idx is not None:
+                    # Reconstruct prompt messages with structure token
+                    prompt_messages = [msg for msg in messages if msg.get("role") != "assistant"]
+                    
+                    # Get last user message text and insert structure token
+                    user_text = tokenizer.apply_chat_template(
+                        prompt_messages[:last_user_idx + 1],
+                        tokenize=False,
+                        add_generation_prompt=False,
+                    )
+                    
+                    # Insert structure token before closing tag
+                    if "<|im_end|>" in user_text:
+                        parts = user_text.rsplit("<|im_end|>", 1)
+                        modified_user_text = parts[0] + f" {structure_tokens[0]}<|im_end|>" + (parts[1] if len(parts) > 1 else "")
+                    else:
+                        modified_user_text = user_text + f" {structure_tokens[0]}"
+                    
+                    # Complete prompt with generation prompt
+                    if last_user_idx < len(prompt_messages) - 1:
+                        remaining_messages = prompt_messages[last_user_idx + 1:]
+                        remaining_text = tokenizer.apply_chat_template(
+                            remaining_messages,
+                            tokenize=False,
+                            add_generation_prompt=True,
+                        )
+                        full_modified_text = modified_user_text + remaining_text
+                    else:
+                        # Add generation prompt to modified text
+                        full_modified_text = modified_user_text
+                        if not full_modified_text.endswith("<|im_start|>assistant\n"):
+                            full_modified_text += "<|im_start|>assistant\n"
+                    
+                    # Re-tokenize
+                    modified_tokenized = tokenizer(
+                        full_modified_text,
+                        truncation=True,
+                        max_length=max_seq_length,
+                        padding=False,
+                    )
+                    
+                    # Update input_ids and attention_mask for this example
+                    tokenized["input_ids"][idx] = modified_tokenized["input_ids"]
+                    if "attention_mask" in tokenized and "attention_mask" in modified_tokenized:
+                        tokenized["attention_mask"][idx] = modified_tokenized["attention_mask"]
+                    
+                    # Find the structure token position
+                    structure_token_id = tokenizer.convert_tokens_to_ids(structure_tokens[0])
+                    if structure_token_id in modified_tokenized["input_ids"]:
+                        patch_pos = modified_tokenized["input_ids"].index(structure_token_id)
+            
+            patch_position_batch.append(patch_pos)
+        
+        tokenized["patch_position"] = patch_position_batch
+        
+        # For inference, instruction positions are the entire prompt
+        instr_len_batch: List[int] = []
+        for full_ids in tokenized["input_ids"]:
+            instr_len = len(full_ids)
+            instr_len_batch.append(int(instr_len))
+        
+        tokenized["instr_len"] = instr_len_batch
+        
+        # Store reference texts for evaluation
+        tokenized["reference_text"] = references
+        tokenized["sample_id"] = sample_ids
+        
+        # Override with pre-existing fields if present
+        if 'instr_positions' in examples:
+            tokenized['instr_positions'] = examples['instr_positions']
+        if 'instr_len' in examples:
+            tokenized['instr_len'] = examples['instr_len']
+        if 'patch_position' in examples:
+            tokenized['patch_position'] = examples['patch_position']
+        
+        return tokenized
+    
+    # Apply preprocessing to dataset - ONLY tokenization, keep raw graph columns
+    colnames = dataset[split].column_names
+    
+    # Check if raw graph columns exist (for logging only)
+    has_raw_graph_columns = (
+        "modality" in colnames
+        and "node_feat" in colnames
+        and "pos" in colnames
+    )
+    if has_raw_graph_columns:
+        logger.info("Dataset has raw graph columns - will be used directly by collator during inference")
+    
+    # Tokenize dataset - only remove 'messages', keep all graph columns
+    remove_cols: List[str] = []
+    if "messages" in colnames:
+        remove_cols.append("messages")
+    
+    # Tokenize (fast - only text processing, no graph data copying)
+    processed_dataset = dataset.map(
+        _preprocess_batch,
+        batched=True,
+        desc="Tokenizing inference dataset",
+        remove_columns=remove_cols,
+        num_proc=None,  # CRITICAL: multiprocessing truncates large nested lists!
+    )
+    
+    logger.info("✓ Inference preprocessing complete - raw graph columns preserved")
+    
+    return processed_dataset

@@ -575,6 +575,7 @@ class Octopus(PreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         patch_mask: Optional[torch.Tensor] = None,
         node_mask: Optional[torch.Tensor] = None,
+        return_patch_tokens_count: bool = False,
         **generation_kwargs,
     ) -> torch.Tensor:
         """Generate with graph context."""
@@ -628,11 +629,19 @@ class Octopus(PreTrainedModel):
                         patch_attn_mask = effective_patch_mask[:B].to(attention_mask.dtype)
                     attention_mask = torch.cat([patch_attn_mask, attention_mask], dim=1)
         
-        return self.llm_model.generate(
+        outputs = self.llm_model.generate(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             **generation_kwargs,
         )
+        if return_patch_tokens_count:
+            return (
+                outputs,
+                inputs_embeds.shape[1] - seq_len
+            )        
+        return outputs
+    
+    
     
     def prepare_inputs_for_generation(self, input_ids, **kwargs):
         """Prepare inputs for generation - delegates to underlying LLM."""

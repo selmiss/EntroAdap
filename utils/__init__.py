@@ -6,13 +6,17 @@ The training runners import helpers directly from `utils`, e.g.:
 so we re-export those symbols here.
 """
 
-from .data import get_dataset
-from .model_utils import get_model, get_tokenizer, get_custom_model
-
-__all__ = ["get_dataset", "get_model", "get_tokenizer", "get_custom_model"]
+from .checkpoint_inspector import inspect_checkpoint_keys
 from .data import get_dataset
 from .import_utils import is_e2b_available, is_morph_available
-from .model_utils import get_model, get_tokenizer
+from .model_utils import get_custom_model, get_model, get_tokenizer
 
-
-__all__ = ["get_tokenizer", "is_e2b_available", "is_morph_available", "get_model", "get_dataset"]
+__all__ = [
+    "get_tokenizer",
+    "is_e2b_available",
+    "is_morph_available",
+    "get_model",
+    "get_custom_model",
+    "get_dataset",
+    "inspect_checkpoint_keys",
+]

@@ -18,11 +18,11 @@ class EncoderConfig:
 @dataclass
 class PatchingConfig:
     """Configuration for instruction-conditioned patching."""
-    k_max: int = 32                          # Max patches per graph
-    r_max: int = 64                          # Max nodes per patch
-    steps: int = 3                           # Patch growth iterations
-    keep_ratio: float = 0.5                  # Membership retention per step
-    dynamic_k_mass: Optional[float] = None   # Mass-based anchor selection (e.g., 0.8)
+    k_max: int = 256                          # Max patches per graph
+    r_max: int = 1024                          # Max nodes per patch
+    steps: int = 7                           # Patch growth iterations
+    keep_ratio: float = 0.92                  # Membership retention per step
+    dynamic_k_mass: Optional[float] = 0.1   # Mass-based anchor selection (e.g., 0.8)
     gate_hidden_dim: int = 256               # Gate MLP hidden dimension
     gate_dropout: float = 0.0                # Gate dropout
 

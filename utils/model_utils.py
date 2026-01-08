@@ -3,9 +3,9 @@ import logging
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer
 from safetensors.torch import load_file
-
+import json
 from trl import ModelConfig, get_kbit_device_map, get_quantization_config, get_peft_config
-
+from transformers import AutoConfig
 from src.models.training_configs import GRPOConfig, SFTConfig, OctopusConfig as OctopusTrainingConfig
 from src.models import Octopus
 from src.models.octopus_config import (
@@ -14,7 +14,7 @@ from src.models.octopus_config import (
     PatchingConfig,
     FusionConfig,
 )
-
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,148 @@ def get_model(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) ->
     )
     return model
 
+def load_prepared_octopus_from_checkpoint(
+    checkpoint_path: str,
+    model_args: OctopusConfig,
+) -> Octopus:
+    """
+    Load a prepared Octopus model from a checkpoint directory.
+    """
+    # Load LLM from checkpoint WITHOUT LoRA wrapper first
+    # This ensures key names match the saved checkpoint
+    dtype_value = getattr(model_args, "dtype", None) or getattr(model_args, "torch_dtype", None)
+    torch_dtype = (
+        dtype_value if dtype_value in ["auto", None] else getattr(torch, dtype_value)
+    )
+    quantization_config = get_quantization_config(model_args)
+    
+    attn_implementation = model_args.attn_implementation if model_args.attn_implementation is not None else "eager"
+    
+    # Kwargs for loading config
+    config_kwargs = dict(
+        revision=model_args.model_revision,
+        trust_remote_code=model_args.trust_remote_code,
+    )
+    
+    # Kwargs for creating model from config (from_config only accepts these)
+    model_init_kwargs = dict(
+        attn_implementation=attn_implementation,
+        torch_dtype=torch_dtype,
+    )
+    
+    # Add quantization config if needed (from_config does accept this)
+    if quantization_config is not None:
+        model_init_kwargs['quantization_config'] = quantization_config
+        model_init_kwargs['device_map'] = get_kbit_device_map()
+    
+    # Load config from checkpoint, then create model
+    # Weights will be loaded later via load_state_dict  
+    logger.info(f"Loading LLM config from checkpoint: {checkpoint_path}")
+    llm_config = AutoConfig.from_pretrained(checkpoint_path, **config_kwargs)
+    logger.info(f"Creating LLM model structure from config")
+    
+    # Use transformers' _fast_init to skip weight initialization (fast and safe)
+    # This uses meta device internally but handles buffer materialization properly
+    if quantization_config is None:
+        # Use _fast_init context to skip initialization
+        from transformers.modeling_utils import no_init_weights
+        with no_init_weights():
+            llm_model = AutoModelForCausalLM.from_config(config=llm_config, **model_init_kwargs)
+    else:
+        # Quantization requires normal initialization
+        llm_model = AutoModelForCausalLM.from_config(config=llm_config, **model_init_kwargs)
+    # Build Octopus config
+    encoder_dim = (
+        model_args.encoder_hidden_dim
+        if model_args.encoder_hidden_dim is not None
+        else model_args.modality_embedding_dim
+    )
+    
+    fusion_dim = (
+        model_args.fusion_hidden_dim
+        if model_args.fusion_hidden_dim is not None
+        else model_args.modality_embedding_dim
+    )
+    
+    mm_config = OctopusConfig(
+        encoder=EncoderConfig(
+            hidden_dim=encoder_dim,
+            num_layers=6,
+            dropout=model_args.dropout,
+        ),
+        patching=PatchingConfig(),
+        fusion=FusionConfig(
+            num_blocks=model_args.num_fusion_blocks,
+            num_heads=model_args.num_attention_heads,
+            hidden_dim=fusion_dim,
+            intermediate_dim=model_args.fusion_intermediate_dim,
+            dropout=model_args.dropout,
+        ),
+    )
+    
+    # Create Octopus model (this initializes the architecture)
+    logger.info("Creating Octopus architecture")
+    multimodal_model = Octopus(llm_model=llm_model, config=mm_config)
+
+    if model_args.use_peft:
+        from peft import get_peft_model
+        logger.info("Applying LoRA wrapper to LLM")
+        peft_config = get_peft_config(model_args)
+        if peft_config is not None:
+            # Wrap the inner LLM with LoRA
+            multimodal_model.llm_model = get_peft_model(multimodal_model.llm_model, peft_config)
+
+    
+    logger.info(f"Loading Octopus weights from {checkpoint_path}")
+    
+    # Check if there's a model.safetensors.index.json (sharded) or model.safetensors (single file)
+    index_path = os.path.join(checkpoint_path, "model.safetensors.index.json")
+    single_file_path = os.path.join(checkpoint_path, "model.safetensors")
+    
+    if os.path.exists(index_path):
+        # Load from sharded files
+        with open(index_path, 'r') as f:
+            index = json.load(f)
+        
+        weight_map = index.get("weight_map", {})
+        state_dict = {}
+        loaded_files = set()
+        
+        for param_name, shard_file in tqdm(weight_map.items(), desc="Loading shards"):
+            if shard_file not in loaded_files:
+                shard_path = os.path.join(checkpoint_path, shard_file)
+                # logger.info(f"Loading shard: {shard_file}")
+                shard_state = load_file(shard_path)
+                state_dict.update(shard_state)
+                loaded_files.add(shard_file)
+        
+        logger.info(f"Loaded {len(state_dict)} parameters from {len(loaded_files)} shards")
+    
+        
+    elif os.path.exists(single_file_path):
+        # Load from single file
+        logger.info(f"Loading from single file: {single_file_path}")
+        state_dict = load_file(single_file_path)
+    else:
+        raise FileNotFoundError(
+            f"Could not find model weights at {checkpoint_path}. "
+            f"Expected either {index_path} or {single_file_path}"
+        )
+    
+    # Load the state dict into the model
+    missing_keys, unexpected_keys = multimodal_model.load_state_dict(state_dict, strict=False)
+    
+    if missing_keys:
+        logger.warning(f"Missing keys when loading checkpoint: {missing_keys[:10]}...")
+    if unexpected_keys:
+        logger.warning(f"Unexpected keys when loading checkpoint: {unexpected_keys[:10]}...")
+    if not missing_keys and not unexpected_keys:
+        logger.info("All keys loaded successfully")
+    
+    logger.info("Prepared Octopus model loaded successfully from checkpoint")
+
+    return multimodal_model
+
 
 def _load_octopus_from_checkpoint(
     checkpoint_path: str,
@@ -150,8 +292,7 @@ def _load_octopus_from_checkpoint(
     Returns:
         Octopus model with loaded weights
     """
-    import os
-    import json
+
     
     # Load LLM from checkpoint WITHOUT LoRA wrapper first
     # This ensures key names match the saved checkpoint
@@ -200,8 +341,8 @@ def _load_octopus_from_checkpoint(
             dropout=multimodal_config.dropout,
         ),
         patching=PatchingConfig(
-            k_max=32,
-            r_max=64,
+            k_max=multimodal_config.k_max if multimodal_config.k_max is not None else 32,
+            r_max=multimodal_config.r_max if multimodal_config.r_max is not None else 64,
         ),
         fusion=FusionConfig(
             num_blocks=multimodal_config.num_fusion_blocks,

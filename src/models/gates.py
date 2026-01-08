@@ -114,7 +114,7 @@ def soft_patch_grow(
     r_max: int = 64,                     # max atoms kept per patch (top-r truncation)
     steps: int = 3,                      # growth turns (not hops count in BFS sense, but similar)
     keep_ratio: float = 0.5,             # how much membership stays each turn
-    dynamic_k_mass: Optional[float] = None,  # e.g., 0.8 to select anchors until cumulative prob mass
+    dynamic_k_mass: Optional[float] = 0.8,  # e.g., 0.8 to select anchors until cumulative prob mass
     return_membership: bool = False,
 ) -> PatchOutput:
     """
@@ -131,10 +131,10 @@ def soft_patch_grow(
       - This implementation loops over graphs to keep logic simple and correct.
 
     Returns:
-      patch_emb: [G, k_max, D], padded with zeros
-      patch_mask: [G, k_max] indicates valid patches
-      anchor_index: [G, k_max] global node indices or -1
-      membership: optional [G, k_max, N] (can be very memory heavy)
+      patch_emb: [G, K, D], where K = actual_max_patches <= k_max (dynamically padded per batch)
+      patch_mask: [G, K] indicates valid patches
+      anchor_index: [G, K] global node indices or -1
+      membership: optional [G, K, N] (can be very memory heavy)
     """
     device = x.device
     G = int(instr.size(0))
@@ -149,7 +149,7 @@ def soft_patch_grow(
     # Convert edge logits to positive weights. Sigmoid is simplest and stable.
     edge_w = torch.sigmoid(edge_logits)  # [E] in (0,1)
 
-    # Prepare outputs
+    # Prepare outputs (initially allocate k_max, will truncate to actual max later)
     patch_emb = torch.zeros((G, k_max, D), device=device, dtype=x.dtype)
     patch_mask = torch.zeros((G, k_max), device=device, dtype=torch.bool)
     anchor_index_out = torch.full((G, k_max), -1, device=device, dtype=torch.long)
@@ -157,6 +157,9 @@ def soft_patch_grow(
     membership_out = None
     if return_membership:
         membership_out = torch.zeros((G, k_max, N), device=device, dtype=x.dtype)
+    
+    # Track actual maximum number of patches across all graphs in batch
+    actual_max_k = 0
 
     # Helper: pick anchors for one graph
     def _select_anchors(node_ids: torch.Tensor) -> torch.Tensor:
@@ -212,13 +215,16 @@ def soft_patch_grow(
 
         if e_ids.numel() == 0:
             # Each patch pools just the anchor atom
-            for j in range(min(k_g, k_max)):
+            write_k = min(k_g, k_max)
+            for j in range(write_k):
                 a_loc = int(anchors_local[j].item())
                 patch_emb[g, j] = x_g[a_loc]
                 patch_mask[g, j] = True
                 anchor_index_out[g, j] = int(anchors_global[j].item())
                 if return_membership:
                     membership_out[g, j, anchors_global[j]] = 1.0
+            # Track the maximum number of patches in this batch
+            actual_max_k = max(actual_max_k, write_k)
             continue
 
         # Remap edges to local indices
@@ -269,7 +275,19 @@ def soft_patch_grow(
             # store to global-N axis (sparse is better, but this is explicit)
             for j in range(write_k):
                 membership_out[g, j, node_ids] = m[j]
+        
+        # Track the maximum number of patches in this batch
+        actual_max_k = max(actual_max_k, write_k)
 
+    # Truncate to actual maximum number of patches in this batch (saves memory & compute)
+    # Ensure at least 1 to avoid empty tensors
+    actual_max_k = max(1, actual_max_k)
+    patch_emb = patch_emb[:, :actual_max_k, :]
+    patch_mask = patch_mask[:, :actual_max_k]
+    anchor_index_out = anchor_index_out[:, :actual_max_k]
+    if return_membership:
+        membership_out = membership_out[:, :actual_max_k, :]
+    
     return PatchOutput(
         patch_emb=patch_emb,
         patch_mask=patch_mask,
