@@ -150,6 +150,7 @@ def run_inference(
                 batch['patch_positions'] = batch['patch_positions'].to(device)
             
             # Generate
+
             outputs, num_injected_patches = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -219,6 +220,11 @@ def main(script_args, model_config, octopus_config):
         trust_remote_code=model_config.trust_remote_code, 
         fix_mistral_regex=True
     )
+    
+    # Set padding side on model to match tokenizer (for correct patch injection alignment)
+    if hasattr(model, 'padding_side'):
+        model.padding_side = tokenizer.padding_side
+        logger.info(f"Set model padding_side to match tokenizer: {tokenizer.padding_side}")
     
     # Only override chat template if explicitly provided
     # Otherwise, use the template saved with the checkpoint

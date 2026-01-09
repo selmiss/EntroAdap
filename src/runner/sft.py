@@ -76,6 +76,11 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     
     # Load model + PEFT config (standard LLM vs custom multimodal)
     model, peft_config = get_model_and_peft_config(model_args, training_args, multimodal_args)
+    
+    # Set padding side on model to match tokenizer (for correct patch injection alignment)
+    if hasattr(model, 'padding_side'):
+        model.padding_side = tokenizer.padding_side
+        logger.info(f"Set model padding_side to match tokenizer: {tokenizer.padding_side}")
 
     if tokenizer.chat_template is None:
         logger.info("No chat template provided, defaulting to ChatML.")
@@ -117,7 +122,7 @@ def main(script_args, training_args, model_args, multimodal_args=None):
     
     if use_multimodal:
         logger.info("Using custom MultiModalDataCollator and MultiModalSFTTrainer for multimodal training")
-        
+
         data_collator = MultiModalDataCollator(
             tokenizer=tokenizer,
             padding=True,
@@ -159,50 +164,61 @@ def main(script_args, training_args, model_args, multimodal_args=None):
         "callbacks": get_callbacks(training_args, model_args),
     }
     
-    # Add compute_text_metrics flag for MultiModalSFTTrainer
-    if use_multimodal and hasattr(training_args, 'compute_text_metrics'):
-        trainer_kwargs["compute_text_metrics"] = training_args.compute_text_metrics
-        if training_args.compute_text_metrics:
+    # Add eval_metrics flag for MultiModalSFTTrainer
+    if use_multimodal and hasattr(training_args, 'eval_metrics'):
+        trainer_kwargs["eval_metrics"] = training_args.eval_metrics
+        if training_args.eval_metrics == "text":
             logger.info("Text metrics (BLEU, ROUGE, METEOR) will be computed during evaluation")
+        elif training_args.eval_metrics == "qa":
+            logger.info("Multiple choice QA metrics will be computed during evaluation")
     
     trainer = trainer_class(**trainer_kwargs)
+    
+    # Set generation config if max_new_tokens is specified
+    if hasattr(training_args, 'max_new_tokens') and training_args.max_new_tokens is not None:
+        logger.info(f"Setting max_new_tokens to {training_args.max_new_tokens} for generation")
+        trainer.model.generation_config.max_new_tokens = training_args.max_new_tokens
+        # Also set on inner LLM if using multimodal wrapper
+        if hasattr(trainer.model, 'llm_model'):
+            trainer.model.llm_model.generation_config.max_new_tokens = training_args.max_new_tokens
 
     ###############
     # Training loop
     ###############
-    logger.info("*** Train ***")
-    checkpoint = None
-    if training_args.resume_from_checkpoint is not None:
-        checkpoint = training_args.resume_from_checkpoint
-    elif last_checkpoint is not None:
-        checkpoint = last_checkpoint
-    train_result = trainer.train(resume_from_checkpoint=checkpoint)
-    metrics = train_result.metrics
-    metrics["train_samples"] = len(dataset[script_args.dataset_train_split])
-    trainer.log_metrics("train", metrics)
-    trainer.save_metrics("train", metrics)
-    trainer.save_state()
+    if training_args.do_train:
+        logger.info("*** Train ***")
+        checkpoint = None
+        if training_args.resume_from_checkpoint is not None:
+            checkpoint = training_args.resume_from_checkpoint
+        elif last_checkpoint is not None:
+            checkpoint = last_checkpoint
+        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        metrics = train_result.metrics
+        metrics["train_samples"] = len(dataset[script_args.dataset_train_split])
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+        trainer.save_state()
 
-    ##################################
-    # Save model and create model card
-    ##################################
-    logger.info("*** Save model ***")
-    # Align the model's generation config with the tokenizer's eos token
-    # to avoid unbounded generation in the transformers `pipeline()` function
-    trainer.model.generation_config.eos_token_id = tokenizer.eos_token_id
-    trainer.save_model(training_args.output_dir)
-    logger.info(f"Model saved to {training_args.output_dir}")
+        ##################################
+        # Save model and create model card
+        ##################################
+        logger.info("*** Save model ***")
+        # Align the model's generation config with the tokenizer's eos token
+        # to avoid unbounded generation in the transformers `pipeline()` function
+        trainer.model.generation_config.eos_token_id = tokenizer.eos_token_id
+        trainer.save_model(training_args.output_dir)
+        logger.info(f"Model saved to {training_args.output_dir}")
 
-    # Save everything else on main process
-    kwargs = {
-        "dataset_name": script_args.dataset_name,
-        "tags": ["open-r1"],
-    }
-    if trainer.accelerator.is_main_process:
-        trainer.create_model_card(**kwargs)
-        # Restore k,v cache for fast inference
-        trainer.model.config.use_cache = True
-        trainer.model.config.save_pretrained(training_args.output_dir)
+        # Save everything else on main process
+        kwargs = {
+            "dataset_name": script_args.dataset_name,
+            "tags": ["open-r1"],
+        }
+        if trainer.accelerator.is_main_process:
+            trainer.create_model_card(**kwargs)
+            # Restore k,v cache for fast inference
+            trainer.model.config.use_cache = True
+            trainer.model.config.save_pretrained(training_args.output_dir)
 
     ##########
     # Evaluate

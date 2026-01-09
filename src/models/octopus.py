@@ -62,6 +62,10 @@ class Octopus(PreTrainedModel):
         # Use provided config or create default
         self.config_octopus = config if config is not None else BaseConfig()
         
+        # Store padding side (can be overridden via kwargs, defaults to "right")
+        # This should match the tokenizer's padding_side for correct alignment
+        self.padding_side = kwargs.get('padding_side', 'right')
+        
         # Extract config values
         enc_cfg = self.config_octopus.encoder
         patch_cfg = self.config_octopus.patching
@@ -388,23 +392,36 @@ class Octopus(PreTrainedModel):
             pos = patch_positions[b, 0].item()
             
             if pos < 0:
-                # No injection for this sample, just keep original + pad at end
-                new_embeds_list.append(inputs_embeds[b])
-                # Pad with zeros at the end to match new length
+                # No injection for this sample, just keep original + pad to match new length
+                # Use model's padding_side to maintain consistency with tokenizer
                 pad_embeds = torch.zeros(k_max, hidden_dim, device=device)
-                new_embeds_list[b] = torch.cat([new_embeds_list[b], pad_embeds], dim=0)
                 
-                if attention_mask is not None:
-                    new_attn_list.append(torch.cat([
-                        attention_mask[b],
-                        torch.zeros(k_max, dtype=attention_mask.dtype, device=device)
-                    ], dim=0))
-                
-                if labels is not None:
-                    new_labels_list.append(torch.cat([
-                        labels[b],
-                        torch.full((k_max,), -100, dtype=labels.dtype, device=device)
-                    ], dim=0))
+                if self.padding_side == "left":
+                    # Left padding: add new padding on the left
+                    new_embeds_list.append(torch.cat([pad_embeds, inputs_embeds[b]], dim=0))
+                    if attention_mask is not None:
+                        new_attn_list.append(torch.cat([
+                            torch.zeros(k_max, dtype=attention_mask.dtype, device=device),
+                            attention_mask[b]
+                        ], dim=0))
+                    if labels is not None:
+                        new_labels_list.append(torch.cat([
+                            torch.full((k_max,), -100, dtype=labels.dtype, device=device),
+                            labels[b]
+                        ], dim=0))
+                else:
+                    # Right padding: add new padding on the right (default behavior)
+                    new_embeds_list.append(torch.cat([inputs_embeds[b], pad_embeds], dim=0))
+                    if attention_mask is not None:
+                        new_attn_list.append(torch.cat([
+                            attention_mask[b],
+                            torch.zeros(k_max, dtype=attention_mask.dtype, device=device)
+                        ], dim=0))
+                    if labels is not None:
+                        new_labels_list.append(torch.cat([
+                            labels[b],
+                            torch.full((k_max,), -100, dtype=labels.dtype, device=device)
+                        ], dim=0))
             else:
                 # Insert patches at position pos
                 pos = min(pos, seq_len)  # Clamp to valid range
@@ -451,7 +468,6 @@ class Octopus(PreTrainedModel):
         input_ids: torch.Tensor,
         graph_data: Optional[Dict[str, Any]] = None,
         batch: Optional[torch.Tensor] = None,
-        instr_positions: Optional[torch.Tensor] = None,
         patch_positions: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         patch_mask: Optional[torch.Tensor] = None,
@@ -467,16 +483,20 @@ class Octopus(PreTrainedModel):
             input_ids: [B, seq_len] token IDs
             graph_data: {'modality': str, 'value': {...}} graph input
             batch: [N] node-to-graph assignment
-            instr_positions: [B, n_instr] token positions that contain instructions
             patch_positions: [B, 1] single position where patches should be inserted
-            attention_mask: [B, seq_len] attention mask
+            attention_mask: [B, seq_len] attention mask (used to identify non-padding tokens)
             patch_mask: [B, k_max] valid patch mask (optional)
             node_mask: [N] valid node mask (optional)
-            labels: [B, seq_len] training labels
+            labels: [B, seq_len] training labels (also used to identify instruction tokens: labels==-100)
             return_dict: whether to return dict
         
         Returns:
             CausalLMOutputWithPast
+        
+        Note:
+            Instruction positions are computed dynamically from labels and attention_mask.
+            - Training: instruction tokens are where labels == -100 (prompt tokens)
+            - Inference: all non-padding tokens (attention_mask == 1) are instruction
         """
         # Get text embeddings
         
@@ -484,19 +504,33 @@ class Octopus(PreTrainedModel):
         B, seq_len, _ = inputs_embeds.shape
         
         # If graph data provided, encode and fuse
-        if graph_data is not None and batch is not None and instr_positions is not None:
-            # Extract instruction embeddings from specific token positions
-            # instr_positions: [B, n_instr], we pool or take first/last
-            # For simplicity: take mean of instruction tokens per sample
+        if graph_data is not None and batch is not None:
+            # Extract instruction embeddings dynamically from labels and attention_mask
+            # Training: instruction tokens are where labels == -100 (prompt) and attention_mask == 1 (not padding)
+            # Inference: all tokens where attention_mask == 1 (entire prompt, no labels available)
             G = batch.max().item() + 1
             instr_emb_list = []
+            
             for g in range(G):
                 if g < B:
-                    instr_pos = instr_positions[g]
-                    valid_pos = instr_pos[instr_pos >= 0]
-                    valid_pos = valid_pos[valid_pos < seq_len]
-                    if valid_pos.numel() > 0:
-                        instr_tokens = inputs_embeds[g, valid_pos]  # [n_instr, llm_hidden_dim]
+                    # Dynamically compute instruction positions from labels and attention_mask
+                    if labels is not None:
+                        # Training: instruction tokens are where labels == -100 (prompt tokens)
+                        # and attention_mask == 1 (not padding)
+                        is_instruction = (labels[g] == -100)
+                        if attention_mask is not None:
+                            is_instruction = is_instruction & (attention_mask[g] == 1)
+                    else:
+                        # Inference: all non-padding tokens are instruction (entire prompt)
+                        # No labels available, so use all valid tokens
+                        if attention_mask is not None:
+                            is_instruction = (attention_mask[g] == 1)
+                        else:
+                            is_instruction = torch.ones(seq_len, dtype=torch.bool, device=inputs_embeds.device)
+                    
+                    # Extract instruction token embeddings
+                    if is_instruction.any():
+                        instr_tokens = inputs_embeds[g, is_instruction]  # [n_instr, llm_hidden_dim]
                         instr_emb_list.append(instr_tokens.mean(dim=0))
                     else:
                         instr_emb_list.append(torch.zeros(self.llm_hidden_dim, device=inputs_embeds.device))
@@ -570,7 +604,6 @@ class Octopus(PreTrainedModel):
         input_ids: torch.Tensor,
         graph_data: Optional[Dict[str, Any]] = None,
         batch: Optional[torch.Tensor] = None,
-        instr_positions: Optional[torch.Tensor] = None,
         patch_positions: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         patch_mask: Optional[torch.Tensor] = None,
@@ -578,28 +611,59 @@ class Octopus(PreTrainedModel):
         return_patch_tokens_count: bool = False,
         **generation_kwargs,
     ) -> torch.Tensor:
-        """Generate with graph context."""
+        """
+        Generate text with graph context.
+        
+        Args:
+            input_ids: [B, seq_len] token IDs
+            graph_data: {'modality': str, 'value': {...}} graph input
+            batch: [N] node-to-graph assignment
+            patch_positions: [B, 1] single position where patches should be inserted
+            attention_mask: [B, seq_len] attention mask (used to identify non-padding instruction tokens)
+            patch_mask: [B, k_max] valid patch mask (optional)
+            node_mask: [N] valid node mask (optional)
+            return_patch_tokens_count: whether to return number of patch tokens added
+            **generation_kwargs: additional generation parameters
+        
+        Returns:
+            Generated token IDs (and optionally patch token count)
+        
+        Note:
+            Instruction positions are computed dynamically from attention_mask.
+            All non-padding tokens (attention_mask == 1) are treated as instruction.
+        """
         self.eval()
+        
+        # Filter out internal tracking fields and non-generation kwargs
+        generation_kwargs = {k: v for k, v in generation_kwargs.items() 
+                           if not k.startswith("_") and k != "labels"}
         
         inputs_embeds = self.get_llm_embeddings(input_ids)
         B, seq_len, _ = inputs_embeds.shape
         
-        if graph_data is not None and batch is not None and instr_positions is not None:
+        if graph_data is not None and batch is not None:
+            # Extract instruction embeddings dynamically from attention_mask
+            # For generation (inference), all non-padding tokens are instruction (entire prompt)
             G = batch.max().item() + 1
             instr_emb_list = []
+            
             for g in range(G):
                 if g < B:
-                    instr_pos = instr_positions[g]
-                    valid_pos = instr_pos[instr_pos >= 0]
-                    valid_pos = valid_pos[valid_pos < seq_len]
-                    if valid_pos.numel() > 0:
-                        instr_tokens = inputs_embeds[g, valid_pos]
+                    # Inference: all non-padding tokens are instruction (entire prompt)
+                    if attention_mask is not None:
+                        is_instruction = (attention_mask[g] == 1)
+                    else:
+                        is_instruction = torch.ones(seq_len, dtype=torch.bool, device=inputs_embeds.device)
+                    
+                    # Extract instruction token embeddings
+                    if is_instruction.any():
+                        instr_tokens = inputs_embeds[g, is_instruction]  # [n_instr, llm_hidden_dim]
                         instr_emb_list.append(instr_tokens.mean(dim=0))
                     else:
                         instr_emb_list.append(torch.zeros(self.llm_hidden_dim, device=inputs_embeds.device))
                 else:
                     instr_emb_list.append(torch.zeros(self.llm_hidden_dim, device=inputs_embeds.device))
-            instr_emb = torch.stack(instr_emb_list, dim=0)
+            instr_emb = torch.stack(instr_emb_list, dim=0)  # [G, llm_hidden_dim]
             
             patch_emb, out_patch_mask, node_emb = self.encode_and_patch(graph_data, instr_emb, batch)
 
@@ -628,6 +692,10 @@ class Octopus(PreTrainedModel):
                     if effective_patch_mask is not None:
                         patch_attn_mask = effective_patch_mask[:B].to(attention_mask.dtype)
                     attention_mask = torch.cat([patch_attn_mask, attention_mask], dim=1)
+        
+        # Ensure max_new_tokens is set when using inputs_embeds
+        if "max_new_tokens" not in generation_kwargs and "max_length" not in generation_kwargs:
+            generation_kwargs["max_new_tokens"] = self.generation_config.max_new_tokens if hasattr(self, "generation_config") else 512
         
         outputs = self.llm_model.generate(
             inputs_embeds=inputs_embeds,

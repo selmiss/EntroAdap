@@ -1,0 +1,71 @@
+prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-Instruct-stage2
+output_dir: ./checkpoints/benchmark/octopus/disease-benchmark-llama-3.1-8b-instruct
+
+dataset_train_file: data/benchmark/chemical_disease_interaction_extraction/train.parquet
+dataset_eval_file: data/benchmark/chemical_disease_interaction_extraction/test.parquet
+dataset_train_split: train
+dataset_test_split: test
+
+learning_rate: 1.0e-5
+num_train_epochs: 20
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 8
+max_grad_norm: 1.0
+warmup_steps: 50
+log_level: info
+
+gradient_checkpointing: true
+bf16: true
+use_liger_kernel: false
+optim: adamw_torch
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1e-8
+weight_decay: 0.01
+
+use_peft: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+logging_steps: 10
+save_strategy: "steps"
+save_steps: 5000
+save_total_limit: 3
+
+eval_strategy: "steps"
+eval_steps: 10
+# Enable text generation metrics computation during evaluation
+eval_metrics: "text"
+
+report_to: ["wandb"]
+wandb_project: "octopus-benchmark"
+run_name: "disease-benchmark-llama-3.1-8b-instruct"
+
+remove_unused_columns: false
+
+dataloader_num_workers: 8
+dataloader_prefetch_factor: 4
+dataloader_pin_memory: true
+dataloader_persistent_workers: true
+
+use_custom_model: true
+encoder_hidden_dim: 256
+modality_embedding_dim: 4096
+num_fusion_blocks: 8
+num_attention_heads: 32
+fusion_hidden_dim: null
+fusion_intermediate_dim: null
+dropout: 0.1
+max_seq_length: 2048
+
+max_atoms: 30000
+max_edges: 500000
+skip_on_error: true
+
+freeze_encoder: true
+freeze_llm: false
+freeze_gates: true
+freeze_fusion_blocks: true
+freeze_projections: true

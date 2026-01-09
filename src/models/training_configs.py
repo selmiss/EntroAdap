@@ -88,7 +88,7 @@ class OctopusConfig:
         metadata={"help": "Dropout rate for fusion blocks."}
     )
     max_seq_length: int = field(
-        default=256,
+        default=2048,
         metadata={"help": "Maximum sequence length for multimodal training."}
     )
     
@@ -370,6 +370,14 @@ class SFTConfig(trl.SFTConfig):
     args for callbacks, benchmarks etc
     """
 
+    do_train: bool = field(
+        default=True,
+        metadata={"help": "Whether to run training."},
+    )
+    do_eval: bool = field(
+        default=True,
+        metadata={"help": "Whether to run evaluation."},
+    )
     benchmarks: list[str] = field(
         default_factory=lambda: [],
         metadata={"help": "The benchmarks to run after training."},
@@ -401,9 +409,13 @@ class SFTConfig(trl.SFTConfig):
         default=None,
         metadata={"help": ("The group to store runs under.")},
     )
-    compute_text_metrics: bool = field(
-        default=False,
-        metadata={"help": "Whether to compute NLP metrics (BLEU-2, BLEU-4, ROUGE-1, ROUGE-2, ROUGE-L, METEOR) during evaluation."},
+    eval_metrics: str = field(
+        default="none",
+        metadata={"help": "Evaluation metrics to compute: 'text' for NLP metrics (BLEU, ROUGE, METEOR), 'qa' for multiple choice accuracy, 'none' to disable."},
+    )
+    max_new_tokens: Optional[int] = field(
+        default=2048,
+        metadata={"help": "Maximum number of new tokens to generate during evaluation. If None, uses model's default generation config."},
     )
 
 
