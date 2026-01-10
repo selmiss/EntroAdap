@@ -25,4 +25,4 @@ pyarrow
 
 # Testing dependencies
 pytest
-pytest-cov
+pytest-covq

@@ -1,8 +1,8 @@
-prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v1_5
-output_dir: ./checkpoints/benchmark/octopus/qa-llama-3.1-8b
+prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v2
+output_dir: ./checkpoints/benchmark/octopus/molgen-llama-3.1-8b
 
-dataset_train_file: data/benchmark/mol_qa/train.parquet
-dataset_eval_file: data/benchmark/mol_qa/test.parquet
+dataset_train_file: data/benchmark/mol_gen/train.parquet
+dataset_eval_file: data/benchmark/mol_gen/test.parquet
 # Optional: Limit the number of samples for training and evaluation
 # dataset_train_max_samples: 10000  # Uncomment to limit training samples
 # dataset_eval_max_samples: 1000    # Uncomment to limit evaluation samples
@@ -13,9 +13,9 @@ do_train: true
 do_eval: true
 
 learning_rate: 1e-5
-num_train_epochs: 5
-per_device_train_batch_size: 4
-per_device_eval_batch_size: 4
+num_train_epochs: 2
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
 gradient_accumulation_steps: 16
 max_grad_norm: 1.0
 warmup_steps: 50
@@ -38,18 +38,18 @@ lora_dropout: 0.05
 logging_steps: 10
 save_strategy: "epoch"
 save_steps: 1
-save_total_limit: 3
+save_total_limit: 2
 
 eval_strategy: "steps"
 eval_steps: 1000
-# Enable QA metrics computation during evaluation
-eval_metrics: "qa"
+# Enable text generation metrics computation during evaluation
+eval_metrics: "text"
 # Maximum new tokens to generate for QA responses
-max_new_tokens: 8
+max_new_tokens: 512
 
 report_to: ["wandb"]
 wandb_project: "octopus-benchmark"
-run_name: "qa-llama-3.1-8b"
+run_name: "molgen-llama-3.1-8b"
 
 remove_unused_columns: false
 

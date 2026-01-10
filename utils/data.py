@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import List, Dict
+from typing import List, Dict, Optional
 from collections import Counter
 
 import datasets
@@ -146,7 +146,7 @@ def _load_parquet_files_from_paths(paths: List[str], max_samples_list: List = No
     return datasets_list
 
 
-def _load_single_file(file_path: str) -> datasets.Dataset:
+def _load_single_file(file_path: str, max_samples: Optional[int] = None) -> datasets.Dataset:
     if file_path.endswith('.jsonl') or file_path.endswith('.json'):
         ds = datasets.load_dataset('json', data_files=file_path, split='train')
     elif file_path.endswith('.csv'):
@@ -155,6 +155,16 @@ def _load_single_file(file_path: str) -> datasets.Dataset:
         ds = datasets.load_dataset('parquet', data_files=file_path, split='train')
     else:
         ds = datasets.load_dataset('text', data_files=file_path, split='train')
+    
+    # Apply max_samples if specified
+    if max_samples is not None and max_samples < len(ds):
+        import random
+        random.seed(42)
+        indices = list(range(len(ds)))
+        random.shuffle(indices)
+        selected_indices = indices[:int(max_samples)]
+        ds = ds.select(selected_indices)
+    
     return ds
 
 
@@ -170,10 +180,20 @@ def get_dataset(args: ScriptArguments) -> DatasetDict:
     if args.dataset_train_file is not None and args.dataset_eval_file is not None:
         logger.info(f"Loading pre-split datasets: train={args.dataset_train_file}, eval={args.dataset_eval_file}")
         
-        train_ds = _load_single_file(args.dataset_train_file)
-        eval_ds = _load_single_file(args.dataset_eval_file)
+        train_ds = _load_single_file(args.dataset_train_file, max_samples=args.dataset_train_max_samples)
+        eval_ds = _load_single_file(args.dataset_eval_file, max_samples=args.dataset_eval_max_samples)
         
-        logger.info(f"Loaded {len(train_ds):,} training samples and {len(eval_ds):,} evaluation samples")
+        # Log sample counts with max_samples info
+        if args.dataset_train_max_samples is not None:
+            logger.info(f"Loaded {len(train_ds):,} training samples (max_samples={args.dataset_train_max_samples:,})")
+        else:
+            logger.info(f"Loaded {len(train_ds):,} training samples")
+        
+        if args.dataset_eval_max_samples is not None:
+            logger.info(f"Loaded {len(eval_ds):,} evaluation samples (max_samples={args.dataset_eval_max_samples:,})")
+        else:
+            logger.info(f"Loaded {len(eval_ds):,} evaluation samples")
+        
         return DatasetDict({"train": train_ds, "test": eval_ds})
     
     if args.dataset_name and not args.dataset_mixture:

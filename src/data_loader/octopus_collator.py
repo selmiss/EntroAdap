@@ -998,6 +998,82 @@ class ModalityAwareBatchSamplerForSFT(Sampler):
         self.epoch = epoch
 
 
+def preprocess_text_only_dataset(
+    dataset: DatasetDict,
+    tokenizer: PreTrainedTokenizerBase,
+    split: str,
+    structure_tokens: List[str] = None,
+) -> DatasetDict:
+    """
+    Preprocess dataset for text-only training by replacing structure tokens with sequences.
+    
+    For non-multimodal training, we need to replace structure tokens (e.g., <STRUCTURE>, <mol>)
+    with their actual textual representations (SMILES, DNA/RNA sequences, etc.).
+    
+    Args:
+        dataset: Dataset dictionary containing the data
+        tokenizer: Tokenizer to use for processing
+        split: Split name to process (e.g., "train")
+        structure_tokens: List of structure tokens to search for
+        
+    Returns:
+        Processed dataset with structure tokens replaced by sequences
+    """
+    if structure_tokens is None:
+        structure_tokens = ["<STRUCTURE>", "<mol>", "<DNA>", "<RNA>"]
+    
+    def replace_structure_tokens_with_sequences(examples):
+        """Replace structure tokens in messages with actual sequences."""
+        if 'messages' not in examples:
+            return examples
+        
+        processed_messages = []
+        
+        for idx, messages in enumerate(examples['messages']):
+            # Make a deep copy to avoid modifying original
+            messages_copy = [msg.copy() for msg in messages]
+            
+            # Try to find sequence data in various fields
+            sequence_text = None
+            
+            # Priority order: smiles > sequence > other potential fields
+            if 'smiles' in examples and idx < len(examples['smiles']):
+                sequence_text = examples['smiles'][idx]
+            elif 'sequence' in examples and idx < len(examples['sequence']):
+                sequence_text = examples['sequence'][idx]
+            elif 'seq' in examples and idx < len(examples['seq']):
+                sequence_text = examples['seq'][idx]
+            elif 'protein_sequence' in examples and idx < len(examples['protein_sequence']):
+                sequence_text = examples['protein_sequence'][idx]
+            
+            # If we found sequence data, replace structure tokens
+            if sequence_text and sequence_text.strip():
+                for msg in messages_copy:
+                    if 'content' in msg and msg['content']:
+                        content = msg['content']
+                        # Replace any of the structure tokens with the sequence
+                        for token in structure_tokens:
+                            if token in content:
+                                content = content.replace(token, sequence_text)
+                        msg['content'] = content
+            
+            processed_messages.append(messages_copy)
+        
+        examples['messages'] = processed_messages
+        return examples
+    
+    logger.info(f"Preprocessing text-only dataset: replacing structure tokens with sequences")
+    
+    # Apply preprocessing to the specified split
+    processed_dataset = dataset.map(
+        replace_structure_tokens_with_sequences,
+        batched=True,
+        desc="Replacing structure tokens with sequences",
+    )
+    
+    return processed_dataset
+
+
 def preprocess_inference_dataset(
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizerBase,

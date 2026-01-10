@@ -1,5 +1,7 @@
-prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v1_5
-output_dir: ./checkpoints/benchmark/octopus/qa-llama-3.1-8b
+# Standard LLM baseline config (without multimodal/Octopus)
+# This config trains a text-only LLM on the same QA dataset
+model_name_or_path: unsloth/Llama-3.1-8B-Instruct  # Change this to your base LLM path
+output_dir: ./checkpoints/benchmark/llama3-baseline/qa-llama-3.1-8b
 
 dataset_train_file: data/benchmark/mol_qa/train.parquet
 dataset_eval_file: data/benchmark/mol_qa/test.parquet
@@ -49,7 +51,7 @@ max_new_tokens: 8
 
 report_to: ["wandb"]
 wandb_project: "octopus-benchmark"
-run_name: "qa-llama-3.1-8b"
+run_name: "qa-llama-3.1-8b-baseline"
 
 remove_unused_columns: false
 
@@ -58,7 +60,10 @@ dataloader_prefetch_factor: 4
 dataloader_pin_memory: true
 dataloader_persistent_workers: true
 
-use_custom_model: true
+# Disable multimodal/Octopus model - use standard LLM only
+use_custom_model: false
+
+# Multimodal-specific parameters (unused when use_custom_model=false, kept for config consistency)
 encoder_hidden_dim: 256
 modality_embedding_dim: 4096
 num_fusion_blocks: 8

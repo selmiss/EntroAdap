@@ -206,6 +206,14 @@ class ScriptArguments(trl.ScriptArguments):
         default=None,
         metadata={"help": "Path to evaluation file. Use with dataset_train_file for pre-split datasets."}
     )
+    dataset_train_max_samples: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum samples to load from training file. None means no limit."}
+    )
+    dataset_eval_max_samples: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum samples to load from evaluation file. None means no limit."}
+    )
     dataset_max_samples: Optional[Any] = field(
         default=None,
         metadata={"help": "Maximum samples per dataset. Can be a single integer (applied to all) or a list of integers matching dataset_name length. None means no limit."}

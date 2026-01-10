@@ -14,7 +14,7 @@ from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
 from src.models.training_configs import ScriptArguments, SFTConfig, OctopusConfig
-from src.data_loader import MultiModalDataCollator, preprocess_multimodal_dataset
+from src.data_loader import MultiModalDataCollator, preprocess_multimodal_dataset, preprocess_text_only_dataset
 from src.trainer.octopus_trainer import MultiModalSFTTrainer
 from utils import get_dataset, get_tokenizer
 from utils.data import print_modality_statistics
@@ -147,6 +147,15 @@ def main(script_args, training_args, model_args, multimodal_args=None):
             max_atoms=multimodal_args.max_atoms,
             max_edges=multimodal_args.max_edges,
             filter_before_tokenization=False,  # Filtering happens during training for efficiency
+        )
+    else:
+        # For text-only training, replace structure tokens with sequences
+        logger.info("Using standard SFTTrainer for text-only training")
+        dataset = preprocess_text_only_dataset(
+            dataset=dataset,
+            tokenizer=tokenizer,
+            split=script_args.dataset_train_split,
+            structure_tokens=structure_tokens,
         )
     
     # Use custom trainer for multimodal, standard for text-only
