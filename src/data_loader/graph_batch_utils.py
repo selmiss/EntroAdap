@@ -34,26 +34,27 @@ def merge_protein_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str, tor
         batch_pos.append(g['pos'])
         batch_indices.extend([graph_idx] * num_nodes)
         
-        # Offset edge indices
-        edge_index = g['edge_index'] + node_offset
-        batch_edge_index.append(edge_index)
-        
-        # Support both old (edge_attr) and new (edge_feat_dist) naming
-        if 'edge_attr' in g:
-            batch_edge_attr.append(g['edge_attr'])
-        if 'edge_feat_dist' in g:
-            batch_edge_feat_dist.append(g['edge_feat_dist'])
+        # Offset edge indices (skip if empty)
+        if 'edge_index' in g and g['edge_index'].numel() > 0:
+            edge_index = g['edge_index'] + node_offset
+            batch_edge_index.append(edge_index)
+            
+            # Support both old (edge_attr) and new (edge_feat_dist) naming
+            if 'edge_attr' in g:
+                batch_edge_attr.append(g['edge_attr'])
+            if 'edge_feat_dist' in g:
+                batch_edge_feat_dist.append(g['edge_feat_dist'])
         
         node_offset += num_nodes
     
     merged = {
         'node_feat': torch.cat(batch_node_feat, dim=0),
         'pos': torch.cat(batch_pos, dim=0),
-        'edge_index': torch.cat(batch_edge_index, dim=1),
         'batch': torch.tensor(batch_indices, dtype=torch.long),
     }
     
-    # Support both naming conventions for backward compatibility
+    if batch_edge_index:
+        merged['edge_index'] = torch.cat(batch_edge_index, dim=1)
     if batch_edge_attr:
         merged['edge_attr'] = torch.cat(batch_edge_attr, dim=0)
     if batch_edge_feat_dist:
@@ -89,26 +90,27 @@ def merge_nucleic_acid_graphs(graphs: List[Dict[str, torch.Tensor]]) -> Dict[str
         batch_pos.append(g['pos'])
         batch_indices.extend([graph_idx] * num_nodes)
         
-        # Offset edge indices
-        edge_index = g['edge_index'] + node_offset
-        batch_edge_index.append(edge_index)
-        
-        # Support both old (edge_attr) and new (edge_feat_dist) naming
-        if 'edge_attr' in g:
-            batch_edge_attr.append(g['edge_attr'])
-        if 'edge_feat_dist' in g:
-            batch_edge_feat_dist.append(g['edge_feat_dist'])
+        # Offset edge indices (skip if empty)
+        if 'edge_index' in g and g['edge_index'].numel() > 0:
+            edge_index = g['edge_index'] + node_offset
+            batch_edge_index.append(edge_index)
+            
+            # Support both old (edge_attr) and new (edge_feat_dist) naming
+            if 'edge_attr' in g:
+                batch_edge_attr.append(g['edge_attr'])
+            if 'edge_feat_dist' in g:
+                batch_edge_feat_dist.append(g['edge_feat_dist'])
         
         node_offset += num_nodes
     
     merged = {
         'node_feat': torch.cat(batch_node_feat, dim=0),
         'pos': torch.cat(batch_pos, dim=0),
-        'edge_index': torch.cat(batch_edge_index, dim=1),
         'batch': torch.tensor(batch_indices, dtype=torch.long),
     }
     
-    # Support both naming conventions for backward compatibility
+    if batch_edge_index:
+        merged['edge_index'] = torch.cat(batch_edge_index, dim=1)
     if batch_edge_attr:
         merged['edge_attr'] = torch.cat(batch_edge_attr, dim=0)
     if batch_edge_feat_dist:
