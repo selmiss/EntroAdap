@@ -5,6 +5,7 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.translate.meteor_score import meteor_score
 from rouge_score import rouge_scorer
 import nltk
+from bert_score import score as bert_score
 
 
 def compute_metrics_text_overlap(predictions, labels, tokenizer):
@@ -24,6 +25,9 @@ def compute_metrics_text_overlap(predictions, labels, tokenizer):
             - rouge_2: ROUGE-2 F1 score
             - rouge_l: ROUGE-L F1 score
             - meteor: METEOR score
+            - bertscore_precision: BERTScore precision
+            - bertscore_recall: BERTScore recall
+            - bertscore_f1: BERTScore F1
     """
     # Download required NLTK data if not already present
     try:
@@ -96,6 +100,28 @@ def compute_metrics_text_overlap(predictions, labels, tokenizer):
         rouge_2_scores.append(rouge_scores['rouge2'].fmeasure)
         rouge_l_scores.append(rouge_scores['rougeL'].fmeasure)
     
+    # Compute BERTScore for all predictions at once (more efficient)
+    bertscore_precision = 0.0
+    bertscore_recall = 0.0
+    bertscore_f1 = 0.0
+    
+    if decoded_preds and decoded_labels:
+        try:
+            # BERTScore expects lists of strings
+            P, R, F1 = bert_score(
+                decoded_preds, 
+                decoded_labels, 
+                lang='en',
+                verbose=False,
+                device='cuda' if hasattr(tokenizer, 'device') and 'cuda' in str(tokenizer.device) else 'cpu'
+            )
+            bertscore_precision = float(P.mean())
+            bertscore_recall = float(R.mean())
+            bertscore_f1 = float(F1.mean())
+        except Exception:
+            # If BERTScore fails, use default values
+            pass
+    
     # Return averaged metrics
     metrics = {
         'bleu_2': float(np.mean(bleu_2_scores)) if bleu_2_scores else 0.0,
@@ -104,6 +130,9 @@ def compute_metrics_text_overlap(predictions, labels, tokenizer):
         'rouge_2': float(np.mean(rouge_2_scores)) if rouge_2_scores else 0.0,
         'rouge_l': float(np.mean(rouge_l_scores)) if rouge_l_scores else 0.0,
         'meteor': float(np.mean(meteor_scores)) if meteor_scores else 0.0,
+        'bertscore_precision': bertscore_precision,
+        'bertscore_recall': bertscore_recall,
+        'bertscore_f1': bertscore_f1,
     }
     
     return metrics

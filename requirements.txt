@@ -21,6 +21,10 @@ biopython
 # For data serialization
 pyarrow
 
+# NLP metrics
+nltk
+rouge-score
+bert-score
 
 
 # Testing dependencies
