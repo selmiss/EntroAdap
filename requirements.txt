@@ -29,4 +29,5 @@ bert-score
 
 # Testing dependencies
 pytest
-pytest-covq
+# pytest-covq
+
