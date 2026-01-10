@@ -301,8 +301,8 @@ class MultiModalSFTTrainer(SFTTrainer):
                 if metrics:
                     self.log(output)
                 
-                # Save detailed results to JSONL file
-                if detailed_results is not None and self.args.output_dir:
+                # Save detailed results and metrics to files
+                if self.args.output_dir:
                     import json
                     import os
                     
@@ -310,13 +310,21 @@ class MultiModalSFTTrainer(SFTTrainer):
                     os.makedirs(output_dir, exist_ok=True)
                     
                     step_suffix = f"_step{self.state.global_step}" if self.state.global_step > 0 else ""
-                    output_file = os.path.join(output_dir, f"{metric_key_prefix}_detailed{step_suffix}.jsonl")
                     
-                    with open(output_file, 'w') as f:
-                        for result in detailed_results:
-                            f.write(json.dumps(result) + '\n')
+                    # Save detailed results to JSONL file
+                    if detailed_results is not None:
+                        output_file = os.path.join(output_dir, f"{metric_key_prefix}_detailed{step_suffix}.jsonl")
+                        with open(output_file, 'w') as f:
+                            for result in detailed_results:
+                                f.write(json.dumps(result) + '\n')
+                        print(f"Detailed results saved to: {output_file}")
                     
-                    print(f"Detailed results saved to: {output_file}")
+                    # Save metrics to JSON file
+                    if metrics:
+                        metrics_file = os.path.join(output_dir, f"{metric_key_prefix}_metrics{step_suffix}.json")
+                        with open(metrics_file, 'w') as f:
+                            json.dump(metrics, f, indent=2)
+                        print(f"Metrics saved to: {metrics_file}")
                 
             finally:
                 # Clear stored predictions to free memory
