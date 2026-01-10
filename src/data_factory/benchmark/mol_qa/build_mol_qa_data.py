@@ -2,7 +2,7 @@
 """
 Build molecule QA benchmark dataset from DQ-Former data.
 Converts JSONL format to parquet with structural features.
-Supports both molecule QA (with SMILES) and text-only QA.
+Supports single or multiple molecules per sample.
 """
 
 import sys
@@ -41,57 +41,78 @@ def convert_conversations_to_messages(system: str, conversations: list) -> list:
 
 
 def process_molecule_qa(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Process a single QA sample with optional SMILES into dataset format."""
-    smiles = row.get('smiles')
+    """Process a QA sample with optional SMILES (single or multiple) into dataset format."""
+    smiles_raw = row.get('smiles')
     
-    # Convert conversations to messages format
     messages = convert_conversations_to_messages(
         row.get('system', ''),
         row.get('conversations', [])
     )
     
-    # If no messages, skip this entry
     if not messages:
         return None
     
-    # If no SMILES, create text-only entry
-    if not smiles:
+    if not smiles_raw:
         data = {
             'modality': 'text',
             'messages': messages,
         }
-        # Add optional fields if present
         if 'cid' in row:
             data['cid'] = row['cid']
         if 'category' in row:
             data['category'] = row['category']
         return data
     
-    # Process molecule data
+    # Normalize to list format
+    smiles_list = smiles_raw if isinstance(smiles_raw, list) else [smiles_raw]
+    smiles_list = [s for s in smiles_list if s and s.strip()]
+    
+    if not smiles_list:
+        return None
+    
     try:
-        # Generate structural features
-        atoms, graph_2d, coordinates_3d = generate_2d_3d_from_smiles(smiles)
+        # Process each molecule
+        entities = []
+        for smiles in smiles_list:
+            atoms, graph_2d, coordinates_3d = generate_2d_3d_from_smiles(smiles)
+            
+            if atoms is None or graph_2d is None or coordinates_3d is None:
+                return None
+            
+            entity = {
+                'node_feat': graph_2d['node_feat'].numpy().tolist(),
+                'pos': coordinates_3d.tolist(),
+                'edge_index': graph_2d['edge_index'].numpy().tolist(),
+                'chem_edge_index': graph_2d['chem_edge_index'].numpy().tolist(),
+                'chem_edge_feat_cat': graph_2d['chem_edge_feat_cat'].numpy().tolist(),
+            }
+            
+            if 'edge_feat_dist' in graph_2d:
+                entity['edge_feat_dist'] = graph_2d['edge_feat_dist'].numpy().tolist()
+            
+            entities.append(entity)
         
-        if atoms is None or graph_2d is None or coordinates_3d is None:
-            return None
+        # Build dataset entry (multi-entity format if multiple, single if one)
+        is_multi = len(entities) > 1
         
-        # Build dataset entry with molecule features
         data = {
             'modality': 'molecule',
-            'smiles': smiles,
+            'smiles': smiles_list,
             'cid': row.get('cid', ''),
             'category': row.get('category', ''),
-            'node_feat': graph_2d['node_feat'].numpy().tolist(),
-            'pos': coordinates_3d.tolist(),
-            'edge_index': graph_2d['edge_index'].numpy().tolist(),
-            'chem_edge_index': graph_2d['chem_edge_index'].numpy().tolist(),
-            'chem_edge_feat_cat': graph_2d['chem_edge_feat_cat'].numpy().tolist(),
             'messages': messages,
         }
         
-        # Add spatial edge distances if available
-        if 'edge_feat_dist' in graph_2d:
-            data['edge_feat_dist'] = graph_2d['edge_feat_dist'].numpy().tolist()
+        if is_multi:
+            data['node_feat'] = [e['node_feat'] for e in entities]
+            data['pos'] = [e['pos'] for e in entities]
+            data['edge_index'] = [e['edge_index'] for e in entities]
+            data['chem_edge_index'] = [e['chem_edge_index'] for e in entities]
+            data['chem_edge_feat_cat'] = [e['chem_edge_feat_cat'] for e in entities]
+            if 'edge_feat_dist' in entities[0]:
+                data['edge_feat_dist'] = [e['edge_feat_dist'] for e in entities]
+        else:
+            data.update(entities[0])
         
         return data
     
@@ -242,7 +263,9 @@ def build_mol_qa_dataset(
                 first = df.iloc[0]
                 print(f"  Modality: {first['modality']}")
                 if 'smiles' in first:
-                    print(f"  SMILES: {first['smiles']}")
+                    smiles_val = first['smiles']
+                    num_mols = len(smiles_val) if isinstance(smiles_val, list) else 1
+                    print(f"  SMILES: {smiles_val if not isinstance(smiles_val, list) or num_mols == 1 else f'{num_mols} molecules'}")
                 if 'cid' in first:
                     print(f"  CID: {first['cid']}")
                 if 'category' in first:
@@ -255,14 +278,17 @@ def build_mol_qa_dataset(
                     for key in ['node_feat', 'pos', 'edge_index', 'chem_edge_index']:
                         if key in first:
                             arr = np.array(first[key])
-                            print(f"    {key:20s}: shape {arr.shape}")
+                            if arr.dtype == object:
+                                print(f"    {key:20s}: multi-entity format ({len(arr)} entities)")
+                            else:
+                                print(f"    {key:20s}: shape {arr.shape}")
     
     print("\n✅ Molecule QA dataset building complete!")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build QA benchmark dataset from JSONL files (supports both molecule and text-only QA)"
+        description="Build QA benchmark dataset from JSONL files (supports single/multiple molecules per sample)"
     )
     parser.add_argument(
         '--input_dir',

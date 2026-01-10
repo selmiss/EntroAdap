@@ -3,7 +3,7 @@ torch
 transformers
 trl
 deepspeed
-liger-kernel
+# liger-kernel
 peft
 numpy
 openai
@@ -13,13 +13,13 @@ wandb
 
 # Entity structure
 torch_geometric
-rdkit
+# rdkit
 # For protein structure extraction
 gemmi
 biopython
 
 # For data serialization
-pyarrow
+# pyarrow
 
 # NLP metrics
 nltk
