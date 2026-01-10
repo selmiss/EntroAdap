@@ -10,5 +10,5 @@ cd "$PROJECT_ROOT"
 
 python src/data_factory/benchmark/mol_qa/build_mol_qa_data.py \
     --max_workers 8 \
-    --input_dir /home/UWO/zjing29/proj/DQ-Former/data/mol_instructions_processed/open_question \
-    --output_dir data/benchmark/open_question
+    --input_dir dq_data/mol_prop \
+    --output_dir data/benchmark/mol_prop

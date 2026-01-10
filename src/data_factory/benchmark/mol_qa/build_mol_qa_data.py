@@ -277,10 +277,11 @@ def build_mol_qa_dataset(
                     print(f"\n  Structure data:")
                     for key in ['node_feat', 'pos', 'edge_index', 'chem_edge_index']:
                         if key in first:
-                            arr = np.array(first[key])
-                            if arr.dtype == object:
-                                print(f"    {key:20s}: multi-entity format ({len(arr)} entities)")
+                            val = first[key]
+                            if isinstance(val, list) and len(val) > 0 and isinstance(val[0], list) and len(val[0]) > 0 and isinstance(val[0][0], list):
+                                print(f"    {key:20s}: multi-entity format ({len(val)} entities)")
                             else:
+                                arr = np.array(val)
                                 print(f"    {key:20s}: shape {arr.shape}")
     
     print("\n✅ Molecule QA dataset building complete!")

@@ -1,11 +1,28 @@
 #!/bin/bash
 
-cd "$(dirname "$0")/../../.."
+
 source local_env.sh
 
-python src/data_factory/benchmark/process_text_only_sft.py \
-    /home/UWO/zjing29/proj/DQ-Former/data/Biomolecular_Text_Instructions/chemical_entity_recognition.json \
+python src/data_factory/benchmark/text_only/process_text_only_sft.py \
+    dq_data/Biomolecular_Text_Instructions/dq_data/Biomolecular_Text_Instructions/chemical_entity_recognition.json \
     --output_dir data/benchmark \
-    --dataset_name chemical_disease_interaction_extraction \
-    --system_prompt "You are a helpful assistant specialized in extracting chemical-disease interactions from biomedical text."
+    --dataset_name chemical_entity_recognition \
+    --system_prompt ""
 
+python src/data_factory/benchmark/text_only/process_text_only_sft.py \
+    dq_data/Biomolecular_Text_Instructions/chemical_protein_interaction_extraction.json \
+    --output_dir data/benchmark \
+    --dataset_name chemical_protein_interaction_extraction \
+    --system_prompt ""
+
+python src/data_factory/benchmark/text_only/process_text_only_sft.py \
+    dq_data/Biomolecular_Text_Instructions/multi_choice_question.json \
+    --output_dir data/benchmark \
+    --dataset_name multi_choice_question \
+    --system_prompt ""
+
+python src/data_factory/benchmark/text_only/process_text_only_sft.py \
+    dq_data/Biomolecular_Text_Instructions/true_or_false_question.json \
+    --output_dir data/benchmark \
+    --dataset_name true_or_false_question \
+    --system_prompt ""
