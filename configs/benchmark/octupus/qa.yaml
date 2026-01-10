@@ -1,4 +1,4 @@
-prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v1_5
+prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v2
 output_dir: ./checkpoints/benchmark/octopus/qa-llama-3.1-8b
 
 dataset_train_file: data/benchmark/mol_qa/train.parquet

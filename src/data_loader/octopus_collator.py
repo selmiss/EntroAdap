@@ -3,6 +3,7 @@
 import logging
 import torch
 import random
+import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 from torch.utils.data import Sampler
@@ -141,33 +142,87 @@ class MultiModalDataCollator:
                     modalities.append(f['modality'])
                     graph_indices.append(i)
                     
-                    # Build value dict directly from raw columns
-                    value: Dict[str, torch.Tensor] = {
-                        "node_feat": self._as_tensor(f["node_feat"], dtype=torch.float32),
-                        "pos": self._as_tensor(f["pos"], dtype=torch.float32),
-                    }
+                    # Support both single entity and multiple entities formats
+                    node_feat_raw = f["node_feat"]
+                    # Multi-entity format has 3-level nesting: [entity1_nodes, entity2_nodes, ...]
+                    # where each entity_nodes is [[feat], [feat], ...]
+                    # Single-entity format has 2-level: [[feat], [feat], ...]
+                    # Check: is it list of (list of lists)?
+                    is_multi_entity = (
+                        isinstance(node_feat_raw, list) and 
+                        len(node_feat_raw) > 0 and
+                        isinstance(node_feat_raw[0], list) and
+                        len(node_feat_raw[0]) > 0 and
+                        isinstance(node_feat_raw[0][0], list)
+                    )
                     
-                    # Add edges if present
-                    if "edge_index" in f and f["edge_index"] is not None:
-                        ei = self._as_tensor(f["edge_index"], dtype=torch.long)
-                        if ei.numel() > 0:
-                            value["edge_index"] = self._normalize_edge_index(ei)
-                    
-                    if "edge_attr" in f and f["edge_attr"] is not None:
-                        value["edge_attr"] = self._as_tensor(f["edge_attr"], dtype=torch.float32)
-                    
-                    if "edge_feat_dist" in f and f["edge_feat_dist"] is not None:
-                        value["edge_feat_dist"] = self._as_tensor(f["edge_feat_dist"], dtype=torch.float32)
-                    
-                    if "chem_edge_index" in f and f["chem_edge_index"] is not None:
-                        cei = self._as_tensor(f["chem_edge_index"], dtype=torch.long)
-                        if cei.numel() > 0:
-                            value["chem_edge_index"] = self._normalize_edge_index(cei)
-                    
-                    if "chem_edge_feat_cat" in f and f["chem_edge_feat_cat"] is not None:
-                        value["chem_edge_feat_cat"] = self._as_tensor(f["chem_edge_feat_cat"], dtype=torch.long)
-                    
-                    graph_values.append(value)
+                    if is_multi_entity:
+                        # Multiple entities: merge them within this sample first
+                        sample_graphs = []
+                        for entity_idx in range(len(node_feat_raw)):
+                            entity_dict = {
+                                "node_feat": self._as_tensor(node_feat_raw[entity_idx], dtype=torch.float32),
+                                "pos": self._as_tensor(f["pos"][entity_idx], dtype=torch.float32),
+                            }
+                            
+                            if "edge_index" in f and f["edge_index"] is not None and entity_idx < len(f["edge_index"]):
+                                ei = self._as_tensor(f["edge_index"][entity_idx], dtype=torch.long)
+                                if ei.numel() > 0:
+                                    entity_dict["edge_index"] = self._normalize_edge_index(ei)
+                            
+                            if "edge_attr" in f and f["edge_attr"] is not None and entity_idx < len(f["edge_attr"]):
+                                entity_dict["edge_attr"] = self._as_tensor(f["edge_attr"][entity_idx], dtype=torch.float32)
+                            
+                            if "edge_feat_dist" in f and f["edge_feat_dist"] is not None and entity_idx < len(f["edge_feat_dist"]):
+                                entity_dict["edge_feat_dist"] = self._as_tensor(f["edge_feat_dist"][entity_idx], dtype=torch.float32)
+                            
+                            if "chem_edge_index" in f and f["chem_edge_index"] is not None and entity_idx < len(f["chem_edge_index"]):
+                                cei = self._as_tensor(f["chem_edge_index"][entity_idx], dtype=torch.long)
+                                if cei.numel() > 0:
+                                    entity_dict["chem_edge_index"] = self._normalize_edge_index(cei)
+                            
+                            if "chem_edge_feat_cat" in f and f["chem_edge_feat_cat"] is not None and entity_idx < len(f["chem_edge_feat_cat"]):
+                                entity_dict["chem_edge_feat_cat"] = self._as_tensor(f["chem_edge_feat_cat"][entity_idx], dtype=torch.long)
+                            
+                            sample_graphs.append(entity_dict)
+                        
+                        # Merge multiple entities within this sample
+                        if f['modality'] == 'protein':
+                            merged_sample = merge_protein_graphs(sample_graphs)
+                        else:
+                            merged_sample = merge_molecule_graphs(sample_graphs)
+                        
+                        # Remove the 'batch' field as it will be recreated at batch level
+                        merged_sample.pop('batch', None)
+                        graph_values.append(merged_sample)
+                    else:
+                        # Single entity: build value dict directly from raw columns
+                        value: Dict[str, torch.Tensor] = {
+                            "node_feat": self._as_tensor(f["node_feat"], dtype=torch.float32),
+                            "pos": self._as_tensor(f["pos"], dtype=torch.float32),
+                        }
+                        
+                        # Add edges if present
+                        if "edge_index" in f and f["edge_index"] is not None:
+                            ei = self._as_tensor(f["edge_index"], dtype=torch.long)
+                            if ei.numel() > 0:
+                                value["edge_index"] = self._normalize_edge_index(ei)
+                        
+                        if "edge_attr" in f and f["edge_attr"] is not None:
+                            value["edge_attr"] = self._as_tensor(f["edge_attr"], dtype=torch.float32)
+                        
+                        if "edge_feat_dist" in f and f["edge_feat_dist"] is not None:
+                            value["edge_feat_dist"] = self._as_tensor(f["edge_feat_dist"], dtype=torch.float32)
+                        
+                        if "chem_edge_index" in f and f["chem_edge_index"] is not None:
+                            cei = self._as_tensor(f["chem_edge_index"], dtype=torch.long)
+                            if cei.numel() > 0:
+                                value["chem_edge_index"] = self._normalize_edge_index(cei)
+                        
+                        if "chem_edge_feat_cat" in f and f["chem_edge_feat_cat"] is not None:
+                            value["chem_edge_feat_cat"] = self._as_tensor(f["chem_edge_feat_cat"], dtype=torch.long)
+                        
+                        graph_values.append(value)
             
             if not graph_values:
                 return None
@@ -257,22 +312,36 @@ class MultiModalDataCollator:
         batch_tensor = merged['batch']
         
         return batched_graph, batch_tensor, graph_indices
+    
     def _add_patch_positions(self, batch: Dict[str, Any], features: List[Dict[str, Any]]) -> None:
-        """Add patch positions to batch (single position per sample where graph patches should be injected).
+        """Add patch positions to batch (list of positions per sample where graph patches should be injected).
         
-        patch_position indicates the index where <STRUCTURE> token appears.
-        The model will INSERT k_max patches at this position (not replace).
+        patch_position can be either a single position (int) or list of positions (list[int]).
+        Output shape: [B, max_positions] where max_positions is the max number of positions across samples.
         """
         if not any('patch_position' in f for f in features):
             return
         
-        # Get patch position from each feature (-1 if no graph data)
+        # Get patch positions from each feature
         patch_pos_list = []
+        max_positions = 0
         for f in features:
-            pos = f.get('patch_position', -1)
+            pos = f.get('patch_position', [-1])
+            # Normalize to list format
+            if isinstance(pos, int):
+                pos = [pos]
+            elif not isinstance(pos, list):
+                pos = [-1]
             patch_pos_list.append(pos)
+            max_positions = max(max_positions, len(pos))
         
-        batch['patch_positions'] = torch.tensor(patch_pos_list, dtype=torch.long).unsqueeze(-1)  # [B, 1]
+        # Pad all position lists to same length with -1
+        padded_positions = []
+        for pos_list in patch_pos_list:
+            padded = pos_list + [-1] * (max_positions - len(pos_list))
+            padded_positions.append(padded)
+        
+        batch['patch_positions'] = torch.tensor(padded_positions, dtype=torch.long)  # [B, max_positions]
     
     def _adjust_patch_positions_for_padding(self, batch: Dict[str, Any], features: List[Dict[str, Any]]) -> None:
         """Adjust patch positions if left-padding was applied."""
@@ -288,10 +357,11 @@ class MultiModalDataCollator:
             offsets.append(offset)
         
         # Shift all valid patch positions (>= 0) by their respective offsets
-        patch_positions = batch['patch_positions']  # [B, 1]
+        patch_positions = batch['patch_positions']  # [B, max_positions]
         for i, offset in enumerate(offsets):
-            if offset > 0 and patch_positions[i, 0] >= 0:
-                patch_positions[i, 0] += offset
+            if offset > 0:
+                mask = patch_positions[i] >= 0
+                patch_positions[i][mask] += offset
     
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -303,7 +373,7 @@ class MultiModalDataCollator:
         - labels: [B, seq_len]
         - graph_data: {'modality': str, 'value': {...}} (if graphs present)
         - batch: [N] node-to-graph assignment (if graphs present)
-        - patch_positions: [B, 1] single position where patches should be inserted (if present)
+        - patch_positions: [B, max_positions] positions where patches should be inserted (if present)
         
         Note: Instruction positions are computed dynamically in the model from labels and attention_mask.
         """
@@ -379,12 +449,15 @@ def preprocess_multimodal_dataset(
         return False
     
     def _find_structure_token_position(input_ids):
-        """Find position of structure token in input_ids, return -1 if not found."""
+        """Find positions of structure tokens in input_ids, return list of positions."""
+        positions = []
         for structure_token in structure_tokens:
             structure_token_id = tokenizer.convert_tokens_to_ids(structure_token)
-            if structure_token_id is not None and structure_token_id in input_ids:
-                return input_ids.index(structure_token_id)
-        return -1
+            if structure_token_id is not None:
+                for i, token_id in enumerate(input_ids):
+                    if token_id == structure_token_id:
+                        positions.append(i)
+        return positions if positions else [-1]
     
     def _preprocess_batch(examples):
         """Tokenize messages and prepare labels while preserving multimodal fields."""
@@ -489,10 +562,12 @@ def preprocess_multimodal_dataset(
         tokenized["labels"] = labels_batch
         
         # Step 4: Find patch positions (structure token locations)
-        tokenized["patch_position"] = [
-            _find_structure_token_position(input_ids)
-            for input_ids in tokenized["input_ids"]
-        ]
+        patch_positions_batch = []
+        for input_ids in tokenized["input_ids"]:
+            positions = _find_structure_token_position(input_ids)
+            patch_positions_batch.append(positions)
+        
+        tokenized["patch_position"] = patch_positions_batch
         
         # Override with pre-existing fields if present
         if 'patch_position' in examples:
@@ -692,31 +767,86 @@ class MultiModalInferenceCollator:
                     modalities.append(f['modality'])
                     graph_indices.append(i)
                     
-                    value: Dict[str, torch.Tensor] = {
-                        "node_feat": self._as_tensor(f["node_feat"], dtype=torch.float32),
-                        "pos": self._as_tensor(f["pos"], dtype=torch.float32),
-                    }
+                    # Support both single entity and multiple entities formats
+                    node_feat_raw = f["node_feat"]
+                    # Multi-entity format has 3-level nesting: [entity1_nodes, entity2_nodes, ...]
+                    # where each entity_nodes is [[feat], [feat], ...]
+                    # Single-entity format has 2-level: [[feat], [feat], ...]
+                    # Check: is it list of (list of lists)?
+                    is_multi_entity = (
+                        isinstance(node_feat_raw, list) and 
+                        len(node_feat_raw) > 0 and
+                        isinstance(node_feat_raw[0], list) and
+                        len(node_feat_raw[0]) > 0 and
+                        isinstance(node_feat_raw[0][0], list)
+                    )
                     
-                    if "edge_index" in f and f["edge_index"] is not None:
-                        ei = self._as_tensor(f["edge_index"], dtype=torch.long)
-                        if ei.numel() > 0:
-                            value["edge_index"] = self._normalize_edge_index(ei)
-                    
-                    if "edge_attr" in f and f["edge_attr"] is not None:
-                        value["edge_attr"] = self._as_tensor(f["edge_attr"], dtype=torch.float32)
-                    
-                    if "edge_feat_dist" in f and f["edge_feat_dist"] is not None:
-                        value["edge_feat_dist"] = self._as_tensor(f["edge_feat_dist"], dtype=torch.float32)
-                    
-                    if "chem_edge_index" in f and f["chem_edge_index"] is not None:
-                        cei = self._as_tensor(f["chem_edge_index"], dtype=torch.long)
-                        if cei.numel() > 0:
-                            value["chem_edge_index"] = self._normalize_edge_index(cei)
-                    
-                    if "chem_edge_feat_cat" in f and f["chem_edge_feat_cat"] is not None:
-                        value["chem_edge_feat_cat"] = self._as_tensor(f["chem_edge_feat_cat"], dtype=torch.long)
-                    
-                    graph_values.append(value)
+                    if is_multi_entity:
+                        # Multiple entities: merge them within this sample first
+                        sample_graphs = []
+                        for entity_idx in range(len(node_feat_raw)):
+                            entity_dict = {
+                                "node_feat": self._as_tensor(node_feat_raw[entity_idx], dtype=torch.float32),
+                                "pos": self._as_tensor(f["pos"][entity_idx], dtype=torch.float32),
+                            }
+                            
+                            if "edge_index" in f and f["edge_index"] is not None and entity_idx < len(f["edge_index"]):
+                                ei = self._as_tensor(f["edge_index"][entity_idx], dtype=torch.long)
+                                if ei.numel() > 0:
+                                    entity_dict["edge_index"] = self._normalize_edge_index(ei)
+                            
+                            if "edge_attr" in f and f["edge_attr"] is not None and entity_idx < len(f["edge_attr"]):
+                                entity_dict["edge_attr"] = self._as_tensor(f["edge_attr"][entity_idx], dtype=torch.float32)
+                            
+                            if "edge_feat_dist" in f and f["edge_feat_dist"] is not None and entity_idx < len(f["edge_feat_dist"]):
+                                entity_dict["edge_feat_dist"] = self._as_tensor(f["edge_feat_dist"][entity_idx], dtype=torch.float32)
+                            
+                            if "chem_edge_index" in f and f["chem_edge_index"] is not None and entity_idx < len(f["chem_edge_index"]):
+                                cei = self._as_tensor(f["chem_edge_index"][entity_idx], dtype=torch.long)
+                                if cei.numel() > 0:
+                                    entity_dict["chem_edge_index"] = self._normalize_edge_index(cei)
+                            
+                            if "chem_edge_feat_cat" in f and f["chem_edge_feat_cat"] is not None and entity_idx < len(f["chem_edge_feat_cat"]):
+                                entity_dict["chem_edge_feat_cat"] = self._as_tensor(f["chem_edge_feat_cat"][entity_idx], dtype=torch.long)
+                            
+                            sample_graphs.append(entity_dict)
+                        
+                        # Merge multiple entities within this sample
+                        if f['modality'] == 'protein':
+                            merged_sample = merge_protein_graphs(sample_graphs)
+                        else:
+                            merged_sample = merge_molecule_graphs(sample_graphs)
+                        
+                        # Remove the 'batch' field as it will be recreated at batch level
+                        merged_sample.pop('batch', None)
+                        graph_values.append(merged_sample)
+                    else:
+                        # Single entity: build value dict directly from raw columns
+                        value: Dict[str, torch.Tensor] = {
+                            "node_feat": self._as_tensor(f["node_feat"], dtype=torch.float32),
+                            "pos": self._as_tensor(f["pos"], dtype=torch.float32),
+                        }
+                        
+                        if "edge_index" in f and f["edge_index"] is not None:
+                            ei = self._as_tensor(f["edge_index"], dtype=torch.long)
+                            if ei.numel() > 0:
+                                value["edge_index"] = self._normalize_edge_index(ei)
+                        
+                        if "edge_attr" in f and f["edge_attr"] is not None:
+                            value["edge_attr"] = self._as_tensor(f["edge_attr"], dtype=torch.float32)
+                        
+                        if "edge_feat_dist" in f and f["edge_feat_dist"] is not None:
+                            value["edge_feat_dist"] = self._as_tensor(f["edge_feat_dist"], dtype=torch.float32)
+                        
+                        if "chem_edge_index" in f and f["chem_edge_index"] is not None:
+                            cei = self._as_tensor(f["chem_edge_index"], dtype=torch.long)
+                            if cei.numel() > 0:
+                                value["chem_edge_index"] = self._normalize_edge_index(cei)
+                        
+                        if "chem_edge_feat_cat" in f and f["chem_edge_feat_cat"] is not None:
+                            value["chem_edge_feat_cat"] = self._as_tensor(f["chem_edge_feat_cat"], dtype=torch.long)
+                        
+                        graph_values.append(value)
             
             if not graph_values:
                 return None
@@ -806,12 +936,26 @@ class MultiModalInferenceCollator:
         if not any('patch_position' in f for f in features):
             return
         
+        # Get patch positions from each feature
         patch_pos_list = []
+        max_positions = 0
         for f in features:
-            pos = f.get('patch_position', -1)
+            pos = f.get('patch_position', [-1])
+            # Normalize to list format
+            if isinstance(pos, int):
+                pos = [pos]
+            elif not isinstance(pos, list):
+                pos = [-1]
             patch_pos_list.append(pos)
+            max_positions = max(max_positions, len(pos))
         
-        batch['patch_positions'] = torch.tensor(patch_pos_list, dtype=torch.long).unsqueeze(-1)
+        # Pad all position lists to same length with -1
+        padded_positions = []
+        for pos_list in patch_pos_list:
+            padded = pos_list + [-1] * (max_positions - len(pos_list))
+            padded_positions.append(padded)
+        
+        batch['patch_positions'] = torch.tensor(padded_positions, dtype=torch.long)
     
     def _adjust_patch_positions_for_padding(self, batch: Dict[str, Any], features: List[Dict[str, Any]]) -> None:
         """Adjust patch positions if left-padding was applied."""
@@ -827,10 +971,11 @@ class MultiModalInferenceCollator:
             offsets.append(offset)
         
         # Shift all valid patch positions (>= 0) by their respective offsets
-        patch_positions = batch['patch_positions']  # [B, 1]
+        patch_positions = batch['patch_positions']
         for i, offset in enumerate(offsets):
-            if offset > 0 and patch_positions[i, 0] >= 0:
-                patch_positions[i, 0] += offset
+            if offset > 0:
+                mask = patch_positions[i] >= 0
+                patch_positions[i][mask] += offset
     
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -841,7 +986,7 @@ class MultiModalInferenceCollator:
         - attention_mask: [B, seq_len]
         - graph_data: {'modality': str, 'value': {...}} (if graphs present)
         - batch: [N] node-to-graph assignment (if graphs present)
-        - patch_positions: [B, 1] (if present)
+        - patch_positions: [B, max_positions] (if present)
         
         Also preserves reference data for evaluation:
         - reference_text: List of expected responses (if present)
@@ -1164,90 +1309,21 @@ def preprocess_inference_dataset(
         )
         
         # Find <STRUCTURE> token position for patch injection
-        patch_position_batch: List[int] = []
+        patch_position_batch = []
         for idx, input_ids in enumerate(tokenized["input_ids"]):
-            # Try each structure token in the list
-            patch_pos = -1
+            # Find all structure token positions
+            positions = []
             for structure_token in structure_tokens:
                 structure_token_id = tokenizer.convert_tokens_to_ids(structure_token)
-                if structure_token_id is not None and structure_token_id in input_ids:
-                    patch_pos = input_ids.index(structure_token_id)
-                    break
+                if structure_token_id is not None:
+                    for i, token_id in enumerate(input_ids):
+                        if token_id == structure_token_id:
+                            positions.append(i)
             
-            # Fallback: Insert structure token at end of user query if not found
-            # BUT ONLY if this sample actually has graph data!
-            if patch_pos == -1 and insert_structure_if_missing:
-                # Check if this sample has graph data
-                has_graph = False
-                if 'node_feat' in examples and idx < len(examples['node_feat']):
-                    # Raw column format
-                    has_graph = examples['node_feat'][idx] is not None
-                elif 'graph_data' in examples and idx < len(examples['graph_data']):
-                    # Nested graph_data format
-                    has_graph = examples['graph_data'][idx] is not None
-                
-                # Only insert structure token if graph data exists
-                if has_graph:
-                    messages = examples["messages"][idx]
-                    
-                    # Find last user message
-                    last_user_idx = None
-                    for i, msg in enumerate(messages):
-                        if isinstance(msg, dict) and msg.get("role") == "user":
-                            last_user_idx = i
-                    
-                    if last_user_idx is not None:
-                        # Reconstruct prompt messages with structure token
-                        prompt_messages = [msg for msg in messages if msg.get("role") != "assistant"]
-                        
-                        # Get last user message text and insert structure token
-                        user_text = tokenizer.apply_chat_template(
-                            prompt_messages[:last_user_idx + 1],
-                            tokenize=False,
-                            add_generation_prompt=False,
-                        )
-                        
-                        # Insert structure token before closing tag
-                        if "<|im_end|>" in user_text:
-                            parts = user_text.rsplit("<|im_end|>", 1)
-                            modified_user_text = parts[0] + f" {structure_tokens[0]}<|im_end|>" + (parts[1] if len(parts) > 1 else "")
-                        else:
-                            modified_user_text = user_text + f" {structure_tokens[0]}"
-                        
-                        # Complete prompt with generation prompt
-                        if last_user_idx < len(prompt_messages) - 1:
-                            remaining_messages = prompt_messages[last_user_idx + 1:]
-                            remaining_text = tokenizer.apply_chat_template(
-                                remaining_messages,
-                                tokenize=False,
-                                add_generation_prompt=True,
-                            )
-                            full_modified_text = modified_user_text + remaining_text
-                        else:
-                            # Add generation prompt to modified text
-                            full_modified_text = modified_user_text
-                            if not full_modified_text.endswith("<|im_start|>assistant\n"):
-                                full_modified_text += "<|im_start|>assistant\n"
-                        
-                        # Re-tokenize
-                        modified_tokenized = tokenizer(
-                            full_modified_text,
-                            truncation=True,
-                            max_length=max_seq_length,
-                            padding=False,
-                        )
-                        
-                        # Update input_ids and attention_mask for this example
-                        tokenized["input_ids"][idx] = modified_tokenized["input_ids"]
-                        if "attention_mask" in tokenized and "attention_mask" in modified_tokenized:
-                            tokenized["attention_mask"][idx] = modified_tokenized["attention_mask"]
-                        
-                        # Find the structure token position
-                        structure_token_id = tokenizer.convert_tokens_to_ids(structure_tokens[0])
-                        if structure_token_id in modified_tokenized["input_ids"]:
-                            patch_pos = modified_tokenized["input_ids"].index(structure_token_id)
+            if not positions:
+                positions = [-1]
             
-            patch_position_batch.append(patch_pos)
+            patch_position_batch.append(positions)
         
         tokenized["patch_position"] = patch_position_batch
         

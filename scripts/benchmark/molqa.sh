@@ -1,5 +1,5 @@
-GPU_IDS=6
-export MASTER_PORT=29506
+GPU_IDS=4
+export MASTER_PORT=29504
 
 # Load configuration from YAML file
 CONFIG_FILE="configs/benchmark/octupus/qa.yaml"

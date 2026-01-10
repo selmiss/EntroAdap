@@ -393,11 +393,9 @@ class Octopus(PreTrainedModel):
             
             if pos < 0:
                 # No injection for this sample, just keep original + pad to match new length
-                # Use model's padding_side to maintain consistency with tokenizer
                 pad_embeds = torch.zeros(k_max, hidden_dim, device=device)
                 
                 if self.padding_side == "left":
-                    # Left padding: add new padding on the left
                     new_embeds_list.append(torch.cat([pad_embeds, inputs_embeds[b]], dim=0))
                     if attention_mask is not None:
                         new_attn_list.append(torch.cat([
@@ -410,7 +408,6 @@ class Octopus(PreTrainedModel):
                             labels[b]
                         ], dim=0))
                 else:
-                    # Right padding: add new padding on the right (default behavior)
                     new_embeds_list.append(torch.cat([inputs_embeds[b], pad_embeds], dim=0))
                     if attention_mask is not None:
                         new_attn_list.append(torch.cat([
@@ -424,17 +421,16 @@ class Octopus(PreTrainedModel):
                         ], dim=0))
             else:
                 # Insert patches at position pos
-                pos = min(pos, seq_len)  # Clamp to valid range
+                pos = min(pos, seq_len)
                 
                 # Split: [0:pos] + patches + [pos:]
                 before = inputs_embeds[b, :pos]
                 after = inputs_embeds[b, pos:]
                 
                 # Get valid patches for this sample
-                valid_patches = patches[b]  # [k_max, hidden_dim]
+                valid_patches = patches[b]
                 if patch_mask is not None:
-                    # Zero out invalid patches
-                    mask_expanded = patch_mask[b].unsqueeze(-1).float()  # [k_max, 1]
+                    mask_expanded = patch_mask[b].unsqueeze(-1).float()
                     valid_patches = valid_patches * mask_expanded
                 
                 new_embeds_list.append(torch.cat([before, valid_patches, after], dim=0))
@@ -442,7 +438,6 @@ class Octopus(PreTrainedModel):
                 if attention_mask is not None:
                     before_attn = attention_mask[b, :pos]
                     after_attn = attention_mask[b, pos:]
-                    # Patches get attention mask based on patch_mask
                     if patch_mask is not None:
                         patch_attn = patch_mask[b].to(attention_mask.dtype)
                     else:
@@ -452,7 +447,6 @@ class Octopus(PreTrainedModel):
                 if labels is not None:
                     before_labels = labels[b, :pos]
                     after_labels = labels[b, pos:]
-                    # Patches get -100 (ignore in loss)
                     patch_labels = torch.full((k_max,), -100, dtype=labels.dtype, device=device)
                     new_labels_list.append(torch.cat([before_labels, patch_labels, after_labels], dim=0))
         
@@ -561,15 +555,36 @@ class Octopus(PreTrainedModel):
             
             # Inject patches into text sequence
             if patch_positions is not None:
-                # Insert patches at specified positions (new behavior: INSERT, not replace)
-                inputs_embeds, attention_mask, labels = self._inject_patches_into_sequence(
-                    inputs_embeds=inputs_embeds[:G],  # Only process samples with graphs
-                    patches=fused_patches,
-                    patch_positions=patch_positions,
-                    patch_mask=effective_patch_mask,
-                    attention_mask=attention_mask[:G] if attention_mask is not None else None,
-                    labels=labels[:G] if labels is not None else None,
-                )
+                # Handle multiple positions per sample (for multi-entity support)
+                # Normalize patch_positions to [B, num_positions] format
+                if patch_positions.dim() == 1:
+                    patch_positions = patch_positions.unsqueeze(-1)
+                
+                num_positions = patch_positions.shape[1]
+                current_embeds = inputs_embeds[:G]
+                current_attn = attention_mask[:G] if attention_mask is not None else None
+                current_labels = labels[:G] if labels is not None else None
+                
+                # Inject patches at each position (right to left to avoid position shifts)
+                for pos_idx in range(num_positions - 1, -1, -1):
+                    # Extract single position column [G, 1]
+                    single_position = patch_positions[:, pos_idx:pos_idx+1]
+                    
+                    # Only inject if at least one sample has valid position
+                    if (single_position >= 0).any():
+                        current_embeds, current_attn, current_labels = self._inject_patches_into_sequence(
+                            inputs_embeds=current_embeds,
+                            patches=fused_patches,
+                            patch_positions=single_position,
+                            patch_mask=effective_patch_mask,
+                            attention_mask=current_attn,
+                            labels=current_labels,
+                        )
+                
+                # Update with final results
+                inputs_embeds = current_embeds
+                attention_mask = current_attn
+                labels = current_labels
             else:
                 # Fallback: Concatenate at beginning (old behavior for backward compatibility)
                 inputs_embeds = torch.cat([fused_patches[:B], inputs_embeds], dim=1)
@@ -674,15 +689,30 @@ class Octopus(PreTrainedModel):
             fused_patches = self.fuse_patches_with_nodes(patch_emb, node_emb, effective_patch_mask, node_mask, batch)
             
             if patch_positions is not None:
-                # Insert patches at specified positions (new behavior: INSERT, not replace)
-                inputs_embeds, attention_mask, _ = self._inject_patches_into_sequence(
-                    inputs_embeds=inputs_embeds[:G],
-                    patches=fused_patches,
-                    patch_positions=patch_positions,
-                    patch_mask=effective_patch_mask,
-                    attention_mask=attention_mask[:G] if attention_mask is not None else None,
-                    labels=None,  # No labels during generation
-                )
+                # Handle multiple positions per sample (for multi-entity support)
+                if patch_positions.dim() == 1:
+                    patch_positions = patch_positions.unsqueeze(-1)
+                
+                num_positions = patch_positions.shape[1]
+                current_embeds = inputs_embeds[:G]
+                current_attn = attention_mask[:G] if attention_mask is not None else None
+                
+                # Inject patches at each position (right to left to avoid position shifts)
+                for pos_idx in range(num_positions - 1, -1, -1):
+                    single_position = patch_positions[:, pos_idx:pos_idx+1]
+                    
+                    if (single_position >= 0).any():
+                        current_embeds, current_attn, _ = self._inject_patches_into_sequence(
+                            inputs_embeds=current_embeds,
+                            patches=fused_patches,
+                            patch_positions=single_position,
+                            patch_mask=effective_patch_mask,
+                            attention_mask=current_attn,
+                            labels=None,
+                        )
+                
+                inputs_embeds = current_embeds
+                attention_mask = current_attn
             else:
                 # Fallback: Concatenate at beginning
                 k_max = self.config_octopus.patching.k_max
