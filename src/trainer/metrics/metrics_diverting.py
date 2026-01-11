@@ -6,7 +6,7 @@ def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_pre
     Dispatch to appropriate metrics computation based on eval_metrics setting.
     
     Args:
-        eval_metrics: Type of metrics to compute ('text', 'qa', or 'none')
+        eval_metrics: Type of metrics to compute ('text', 'qa', 'molgen', or 'none')
         predictions: List of predicted token ID arrays
         labels: List of ground truth token ID arrays
         tokenizer: Tokenizer for decoding
@@ -62,6 +62,24 @@ def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_pre
             # Display overall results
             overall_accuracy_pct = f"{metrics['accuracy']*100:.2f}%"
             print(f"\n{'Overall':<25} {metrics['correct']:<10} {metrics['total']:<10} {overall_accuracy_pct:<15}")
+            print(f"{'='*70}\n")
+            
+        elif eval_metrics == "molgen":
+            from src.trainer.metrics.molecule_generation import compute_metrics_molecule_generation_detailed
+            metrics, detailed_results = compute_metrics_molecule_generation_detailed(predictions, labels, tokenizer, selfies_mode=True, prompts=prompts)
+            
+            print(f"\n{'='*70}")
+            print(f"Molecular Generation Metrics ({metric_key_prefix}):")
+            print(f"{'='*70}")
+            print(f"{'Metric':<20} {'Value':<15}")
+            print(f"{'-'*70}")
+            print(f"{'Exact Match':<20} {metrics['exact']*100:.2f}%")
+            print(f"{'BLEU Score':<20} {metrics['bleu']:.4f}")
+            print(f"{'Levenshtein Dist':<20} {metrics['levenshtein']:.2f}")
+            print(f"{'RDK FTS':<20} {metrics['rdk_fts']:.4f}")
+            print(f"{'MACCS FTS':<20} {metrics['maccs_fts']:.4f}")
+            print(f"{'Morgan FTS':<20} {metrics['morgan_fts']:.4f}")
+            print(f"{'Validity':<20} {metrics['validity']*100:.2f}%")
             print(f"{'='*70}\n")
         else:
             metrics = {}

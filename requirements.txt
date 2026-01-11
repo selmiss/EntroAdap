@@ -13,13 +13,14 @@ wandb
 
 # Entity structure
 torch_geometric
-# rdkit
+rdkit
+selfies
 # For protein structure extraction
 gemmi
 biopython
 
 # For data serialization
-# pyarrow
+pyarrow
 
 # NLP metrics
 nltk
