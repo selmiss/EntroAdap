@@ -6,7 +6,7 @@ def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_pre
     Dispatch to appropriate metrics computation based on eval_metrics setting.
     
     Args:
-        eval_metrics: Type of metrics to compute ('text', 'qa', 'molgen', 'mae', or 'none')
+        eval_metrics: Type of metrics to compute ('text', 'qa', 'molgen', 'molprop', or 'none')
         predictions: List of predicted token ID arrays
         labels: List of ground truth token ID arrays
         tokenizer: Tokenizer for decoding
@@ -82,7 +82,7 @@ def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_pre
             print(f"{'Validity':<20} {metrics['validity']*100:.2f}%")
             print(f"{'='*70}\n")
             
-        elif eval_metrics == "mae":
+        elif eval_metrics == "molprop":
             from src.trainer.metrics.mol_property import compute_metrics_mol_property_detailed
             metrics, detailed_results = compute_metrics_mol_property_detailed(predictions, labels, tokenizer, prompts=prompts)
             
