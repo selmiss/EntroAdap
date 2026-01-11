@@ -129,7 +129,8 @@ def main(script_args, training_args, model_args, multimodal_args=None):
             max_length=multimodal_args.max_seq_length,
             return_tensors="pt",
             structure_tokens=structure_tokens,
-            insert_structure_if_missing=True,
+            insert_structure_if_missing=multimodal_args.insert_structure_if_missing,
+            skip_graph_loading=multimodal_args.skip_graph_loading,
         )
         
         # Preprocess dataset (tokenization + modality extraction)
@@ -143,10 +144,12 @@ def main(script_args, training_args, model_args, multimodal_args=None):
             split=script_args.dataset_train_split,
             max_seq_length=multimodal_args.max_seq_length,
             structure_tokens=structure_tokens,
-            insert_structure_if_missing=True,
+            insert_structure_if_missing=multimodal_args.insert_structure_if_missing,
             max_atoms=multimodal_args.max_atoms,
             max_edges=multimodal_args.max_edges,
-            filter_before_tokenization=False,  # Filtering happens during training for efficiency
+            filter_before_tokenization=False,
+            sequence_prepend_key=multimodal_args.sequence_prepend_key,
+            skip_graph_loading=multimodal_args.skip_graph_loading,
         )
     else:
         # For text-only training, replace structure tokens with sequences

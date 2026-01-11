@@ -2,12 +2,26 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Dict, Any
 from transformers import AutoModelForCausalLM, PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast, ModelOutput
+from dataclasses import dataclass
 
 from .cross_attn import FusionBlock
 from .aa_encoder import AAEncoder
 from .gates import AnchorGate, EdgeGate, soft_patch_grow
 from .octopus_config import OctopusConfig, BaseConfig
+
+
+@dataclass
+class OctopusOutput(ModelOutput):
+    """Custom output class for Octopus model with prediction head support."""
+    loss: Optional[torch.FloatTensor] = None
+    logits: Optional[torch.FloatTensor] = None
+    past_key_values: Optional[tuple] = None
+    hidden_states: Optional[tuple] = None
+    attentions: Optional[tuple] = None
+    predictions: Optional[torch.FloatTensor] = None
+    lm_loss: Optional[torch.FloatTensor] = None
+    head_loss: Optional[torch.FloatTensor] = None
 
 
 class Octopus(PreTrainedModel):
@@ -136,6 +150,32 @@ class Octopus(PreTrainedModel):
         # Initialize output projection with small weights
         self._init_projection(self.output_proj, is_downprojection=False)
         self.output_norm = nn.LayerNorm(self.llm_hidden_dim)
+        
+        # 7. Optional prediction head for regression/classification tasks
+        # This bypasses text generation for tasks that need continuous/categorical outputs
+        pred_head_cfg = self.config_octopus.prediction_head
+        self.task_type = pred_head_cfg.task_type
+        self.use_dual_loss = pred_head_cfg.use_dual_loss
+        self.lm_loss_weight = pred_head_cfg.lm_loss_weight
+        self.prediction_head = None
+        
+        if self.task_type == 'regression':
+            from .prediction_heads import RegressionHead
+            self.prediction_head = RegressionHead(
+                hidden_size=self.llm_hidden_dim,
+                dropout=pred_head_cfg.dropout,
+                pooling_strategy=pred_head_cfg.pooling_strategy,
+                hidden_dim=pred_head_cfg.hidden_dim,
+            )
+        elif self.task_type == 'classification':
+            from .prediction_heads import ClassificationHead
+            self.prediction_head = ClassificationHead(
+                hidden_size=self.llm_hidden_dim,
+                num_labels=pred_head_cfg.num_labels,
+                dropout=pred_head_cfg.dropout,
+                pooling_strategy=pred_head_cfg.pooling_strategy,
+                hidden_dim=pred_head_cfg.hidden_dim,
+            )
     
     def _init_projection(self, linear_layer: nn.Linear, is_downprojection: bool = False):
         """
@@ -606,13 +646,72 @@ class Octopus(PreTrainedModel):
                     labels = torch.cat([ignore_labels, labels], dim=1)
         
         # Forward through LLM
-        return self.llm_model(
+        # Compute LM loss if using dual loss or no prediction head
+        compute_lm_loss = (self.prediction_head is None) or self.use_dual_loss
+        
+        llm_outputs = self.llm_model(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            labels=labels,
+            labels=labels if compute_lm_loss else None,  # Compute LM loss if needed
             return_dict=return_dict,
+            output_hidden_states=(self.prediction_head is not None),  # Need hidden states for prediction head
             **kwargs,
         )
+        
+        # If using prediction head, compute regression/classification loss
+        if self.prediction_head is not None:
+            # Get last hidden states from LLM
+            hidden_states = llm_outputs.hidden_states[-1]  # [B, seq_len, hidden_size]
+            
+            # Get predictions from head
+            if self.task_type == 'regression':
+                predictions = self.prediction_head(hidden_states, attention_mask).squeeze(-1)  # [B]
+            else:  # classification
+                predictions = self.prediction_head(hidden_states, attention_mask)  # [B, num_labels]
+            
+            # Compute prediction head loss if target values provided
+            head_loss = None
+            target_values = kwargs.get('target_values', None)
+            if target_values is not None:
+                if self.task_type == 'regression':
+                    # MSE loss for regression
+                    loss_fn = nn.MSELoss()
+                    if target_values.dim() > 1:
+                        target_values = target_values.squeeze(-1)
+                    head_loss = loss_fn(predictions, target_values.float())
+                else:  # classification
+                    # Cross-entropy loss for classification
+                    loss_fn = nn.CrossEntropyLoss()
+                    head_loss = loss_fn(predictions, target_values.long())
+            
+            # Combine losses if using dual loss
+            if self.use_dual_loss and llm_outputs.loss is not None and head_loss is not None:
+                # Weighted combination of LM loss and prediction head loss
+                combined_loss = (
+                    self.lm_loss_weight * llm_outputs.loss +
+                    (1.0 - self.lm_loss_weight) * head_loss
+                )
+                llm_outputs.loss = combined_loss
+                llm_outputs.lm_loss = llm_outputs.loss.detach().clone()  # Store original LM loss
+                llm_outputs.head_loss = head_loss.detach().clone()  # Store head loss
+            elif head_loss is not None:
+                # Only use prediction head loss
+                llm_outputs.loss = head_loss
+            
+            # Return predictions in the output
+            # Create custom output with predictions
+            return OctopusOutput(
+                loss=llm_outputs.loss,
+                logits=llm_outputs.logits,
+                past_key_values=llm_outputs.past_key_values,
+                hidden_states=llm_outputs.hidden_states,
+                attentions=llm_outputs.attentions,
+                predictions=predictions,
+                lm_loss=getattr(llm_outputs, 'lm_loss', None),
+                head_loss=getattr(llm_outputs, 'head_loss', None)
+            )
+        
+        return llm_outputs
     
     def generate(
         self,

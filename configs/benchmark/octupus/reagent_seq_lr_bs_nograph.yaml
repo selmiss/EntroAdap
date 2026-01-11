@@ -1,22 +1,25 @@
 prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v2
-output_dir: ./checkpoints/benchmark/octopus/molgen-llama-3.1-8b
+output_dir: ./checkpoints/benchmark/octopus/reagent-llama-3.1-8b-seq
 
-dataset_train_file: data/benchmark/mol_gen/train.parquet
-dataset_eval_file: data/benchmark/mol_gen/test.parquet
+dataset_train_file: data/benchmark/reagent_prediction/train.parquet
+dataset_eval_file: data/benchmark/reagent_prediction/test.parquet
+sequence_prepend_key: smiles
+insert_structure_if_missing: false
+skip_graph_loading: true
 # Optional: Limit the number of samples for training and evaluation
-dataset_train_max_samples: 100000  # Uncomment to limit training samples
-dataset_eval_max_samples: 800    # Uncomment to limit evaluation samples
+# dataset_train_max_samples: 10000  # Uncomment to limit training samples
+# dataset_eval_max_samples: 10    # Uncomment to limit evaluation samples
 dataset_train_split: train
 dataset_test_split: test
 
 do_train: true
 do_eval: true
 
-learning_rate: 1e-5
-num_train_epochs: 2
+learning_rate: 1e-4
+num_train_epochs: 5
 per_device_train_batch_size: 2
 per_device_eval_batch_size: 2
-gradient_accumulation_steps: 16
+gradient_accumulation_steps: 32
 max_grad_norm: 1.0
 warmup_steps: 50
 log_level: info
@@ -40,16 +43,16 @@ save_strategy: "epoch"
 save_steps: 1
 save_total_limit: 1
 
-eval_strategy: "steps"
-eval_steps: 2000
+eval_strategy: "epoch"
+eval_steps: 1
 # Enable text generation metrics computation during evaluation
-eval_metrics: "text"
+eval_metrics: "molgen"
 # Maximum new tokens to generate for QA responses
 max_new_tokens: 512
 
 report_to: ["wandb"]
 wandb_project: "octopus-benchmark"
-run_name: "molgen-llama-3.1-8b"
+run_name: "reagent-llama-3.1-8b-seq"
 
 remove_unused_columns: false
 

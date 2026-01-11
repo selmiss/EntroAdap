@@ -1,55 +1,42 @@
 prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v2
-output_dir: ./checkpoints/benchmark/octopus/molgen-llama-3.1-8b
+output_dir: ./checkpoints/benchmark/octopus/multi-choice-llama-3.1-8b
+run_name: "multi-choice-llama-3.1-8b"
 
-dataset_train_file: data/benchmark/mol_gen/train.parquet
-dataset_eval_file: data/benchmark/mol_gen/test.parquet
+dataset_train_file: data/benchmark/multi_choice_question/train.parquet
+dataset_eval_file: data/benchmark/multi_choice_question/test.parquet
 # Optional: Limit the number of samples for training and evaluation
-dataset_train_max_samples: 100000  # Uncomment to limit training samples
-dataset_eval_max_samples: 800    # Uncomment to limit evaluation samples
+# dataset_train_max_samples: 10000  # Uncomment to limit training samples
+# dataset_eval_max_samples: 1000    # Uncomment to limit evaluation samples
 dataset_train_split: train
 dataset_test_split: test
 
 do_train: true
 do_eval: true
 
-learning_rate: 1e-5
-num_train_epochs: 2
-per_device_train_batch_size: 2
-per_device_eval_batch_size: 2
+learning_rate: 5e-5
+num_train_epochs: 10 # Training time: 1.5h
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
 gradient_accumulation_steps: 16
-max_grad_norm: 1.0
+
 warmup_steps: 50
 log_level: info
-
-gradient_checkpointing: true
-bf16: true
-use_liger_kernel: false
-optim: adamw_torch
-adam_beta1: 0.9
-adam_beta2: 0.999
-adam_epsilon: 1e-8
-weight_decay: 0.01
-
-use_peft: true
-lora_r: 16
-lora_alpha: 32
-lora_dropout: 0.05
 
 logging_steps: 10
 save_strategy: "epoch"
 save_steps: 1
 save_total_limit: 1
 
-eval_strategy: "steps"
-eval_steps: 2000
-# Enable text generation metrics computation during evaluation
-eval_metrics: "text"
+eval_strategy: "epoch"
+eval_steps: 1
+# Enable QA metrics computation during evaluation
+eval_metrics: "qa"
 # Maximum new tokens to generate for QA responses
-max_new_tokens: 512
+max_new_tokens: 8
 
 report_to: ["wandb"]
 wandb_project: "octopus-benchmark"
-run_name: "molgen-llama-3.1-8b"
+
 
 remove_unused_columns: false
 
@@ -72,8 +59,24 @@ max_atoms: 30000
 max_edges: 500000
 skip_on_error: true
 
+gradient_checkpointing: true
+bf16: true
+use_liger_kernel: false
+optim: adamw_torch
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1e-8
+weight_decay: 0.01
+
 freeze_encoder: true
 freeze_llm: false
 freeze_gates: false
 freeze_fusion_blocks: false
 freeze_projections: false
+
+max_grad_norm: 1.0
+
+use_peft: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05

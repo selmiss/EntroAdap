@@ -24,7 +24,7 @@ class MultiModalSFTTrainer(SFTTrainer):
         Initialize trainer with optional metrics computation.
         
         Args:
-            eval_metrics: Evaluation metrics to compute - 'text', 'qa', 'molgen', 'molprop', or 'none'
+            eval_metrics: Evaluation metrics to compute - 'text', 'qa', 'molgen', 'molprop', 'recognition', or 'none'
         """
         super().__init__(*args, **kwargs)
         self.eval_metrics = eval_metrics
@@ -199,9 +199,23 @@ class MultiModalSFTTrainer(SFTTrainer):
         with torch.no_grad():
             outputs = self.compute_loss(model, inputs, return_outputs=True)
             loss = outputs[0] if isinstance(outputs, tuple) else outputs.loss
+            model_outputs = outputs[1] if isinstance(outputs, tuple) else outputs
+            
+            # Check if model has prediction head and returned direct predictions
+            has_direct_predictions = hasattr(model_outputs, 'predictions') and model_outputs.predictions is not None
         
-        # Generate predictions if metrics are enabled
-        if need_generation_for_metrics:
+        # Store direct predictions from prediction head first (if present)
+        if has_direct_predictions:
+            direct_preds = model_outputs.predictions.cpu().numpy()
+            labels_np = inputs["labels"].cpu().numpy() if isinstance(inputs["labels"], torch.Tensor) else inputs["labels"]
+            
+            for pred_value, label in zip(direct_preds, labels_np):
+                self._eval_direct_predictions.append(float(pred_value))
+                self._eval_labels.append(label)
+        
+        # Only generate text if we need text metrics AND don't have prediction head
+        # (Prediction head is the primary evaluation method; text generation is just for comparison)
+        if need_generation_for_metrics and not has_direct_predictions:
             with torch.no_grad():
                 # Truncate input_ids to prompt only (match inference behavior)
                 # In training, input_ids includes full sequence (prompt + assistant response)
@@ -238,7 +252,7 @@ class MultiModalSFTTrainer(SFTTrainer):
                 labels_np = inputs_for_generation["labels"].cpu().numpy() if isinstance(inputs_for_generation["labels"], torch.Tensor) else inputs_for_generation["labels"]
                 input_ids_np = inputs_for_generation["input_ids"].cpu().numpy() if isinstance(inputs_for_generation["input_ids"], torch.Tensor) else inputs_for_generation["input_ids"]
                 
-                # Store each sample individually
+                # Store text generation results
                 for pred, label, input_ids in zip(pred_ids_np, labels_np, input_ids_np):
                     # Extract prompt only (where labels are -100, indicating ignored tokens)
                     # The prompt is the part before the answer starts
@@ -264,6 +278,7 @@ class MultiModalSFTTrainer(SFTTrainer):
         self._eval_predictions = []
         self._eval_labels = []
         self._eval_prompts = []
+        self._eval_direct_predictions = []  # For prediction head outputs
         
         # Get the dataset that will be evaluated
         dataset_to_eval = eval_dataset if eval_dataset is not None else self.eval_dataset
@@ -272,7 +287,8 @@ class MultiModalSFTTrainer(SFTTrainer):
         output = super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
         
         # Compute metrics based on eval_metrics setting
-        if self.eval_metrics != "none" and self._eval_predictions:
+        # Allow metrics if we have text predictions OR direct predictions from head
+        if self.eval_metrics != "none" and (self._eval_predictions or self._eval_direct_predictions):
             try:
                 # Extract categories from dataset if available
                 categories = None
@@ -282,14 +298,19 @@ class MultiModalSFTTrainer(SFTTrainer):
                     elif 'task' in dataset_to_eval.column_names:
                         categories = dataset_to_eval['task']
                 
+                # Prepare direct predictions if available
+                import numpy as np
+                direct_preds = np.array(self._eval_direct_predictions) if self._eval_direct_predictions else None
+                
                 metrics, detailed_results = compute_metrics(
                     self.eval_metrics,
-                    self._eval_predictions,
+                    self._eval_predictions if self._eval_predictions else None,
                     self._eval_labels,
                     self.processing_class,
                     metric_key_prefix,
                     categories,
-                    prompts=self._eval_prompts
+                    prompts=self._eval_prompts,
+                    direct_predictions=direct_preds
                 )
                 
                 # Add metrics to output with appropriate prefix
@@ -331,6 +352,7 @@ class MultiModalSFTTrainer(SFTTrainer):
                 self._eval_predictions = []
                 self._eval_labels = []
                 self._eval_prompts = []
+                self._eval_direct_predictions = []
         
         return output
 

@@ -50,22 +50,24 @@ def compute_metrics_mol_property(predictions, labels, tokenizer):
     return metrics
 
 
-def compute_metrics_mol_property_detailed(predictions, labels, tokenizer, prompts=None):
+def compute_metrics_mol_property_detailed(predictions, labels, tokenizer, prompts=None, direct_predictions=None):
     """
     Compute metrics for molecular property prediction and return detailed per-sample results.
     
+    Supports two modes:
+    1. Text generation mode: predictions are token IDs that need to be decoded
+    2. Prediction head mode: predictions are direct numeric values from regression head
+    
     Args:
-        predictions: List of predicted token ID arrays
-        labels: List of ground truth token ID arrays
+        predictions: List of predicted token ID arrays (text mode) OR None (head mode)
+        labels: List of ground truth token ID arrays OR numeric values
         tokenizer: Tokenizer for decoding
         prompts: Optional list of prompt token ID arrays
+        direct_predictions: Optional numpy array of direct numeric predictions from regression head
     
     Returns:
         Tuple of (metrics_dict, detailed_results_list)
     """
-    # Decode predictions and labels
-    decoded_preds = []
-    decoded_labels = []
     decoded_prompts = []
     
     # Decode prompts if provided
@@ -74,24 +76,60 @@ def compute_metrics_mol_property_detailed(predictions, labels, tokenizer, prompt
             decoded_prompt = tokenizer.decode(prompt_ids, skip_special_tokens=True)
             decoded_prompts.append(decoded_prompt)
     
-    for pred, label in zip(predictions, labels):
-        # Replace -100 in labels with pad_token_id for decoding
-        label_cleaned = np.where(label != -100, label, tokenizer.pad_token_id)
+    # Check if we're using prediction head mode
+    if direct_predictions is not None:
+        # Prediction head mode: direct numeric predictions
+        # Labels should be numeric ground truth values
+        outputs = []
         
-        # Decode single sequences
-        decoded_pred = tokenizer.decode(pred, skip_special_tokens=True)
-        decoded_label = tokenizer.decode(label_cleaned, skip_special_tokens=True)
+        for idx, (pred_value, label) in enumerate(zip(direct_predictions, labels)):
+            # Extract ground truth value
+            if isinstance(label, (int, float, np.number)):
+                # Direct numeric label
+                gt_value = float(label)
+                gt_string = str(gt_value)
+            elif isinstance(label, np.ndarray):
+                # Try to decode from tokens
+                label_cleaned = np.where(label != -100, label, tokenizer.pad_token_id)
+                gt_string = tokenizer.decode(label_cleaned, skip_special_tokens=True)
+                gt_value = _extract_number(gt_string)
+            else:
+                # String label
+                gt_string = str(label)
+                gt_value = _extract_number(gt_string)
+            
+            # Prediction value is already numeric
+            pred_value = float(pred_value)
+            
+            outputs.append({
+                'ground_truth': gt_string if gt_value is not None else str(label),
+                'prediction': f"{pred_value:.6f}",  # Format as string for consistency
+                'ground_truth_value': gt_value,
+                'prediction_value': pred_value,
+            })
+    else:
+        # Traditional text generation mode: decode predictions and labels
+        decoded_preds = []
+        decoded_labels = []
         
-        decoded_preds.append(decoded_pred)
-        decoded_labels.append(decoded_label)
-    
-    # Prepare outputs in the format expected by compute_metrics_property_internal
-    outputs = []
-    for pred, label in zip(decoded_preds, decoded_labels):
-        outputs.append({
-            'ground_truth': label,
-            'prediction': pred,
-        })
+        for pred, label in zip(predictions, labels):
+            # Replace -100 in labels with pad_token_id for decoding
+            label_cleaned = np.where(label != -100, label, tokenizer.pad_token_id)
+            
+            # Decode single sequences
+            decoded_pred = tokenizer.decode(pred, skip_special_tokens=True)
+            decoded_label = tokenizer.decode(label_cleaned, skip_special_tokens=True)
+            
+            decoded_preds.append(decoded_pred)
+            decoded_labels.append(decoded_label)
+        
+        # Prepare outputs in the format expected by compute_metrics_property_internal
+        outputs = []
+        for pred, label in zip(decoded_preds, decoded_labels):
+            outputs.append({
+                'ground_truth': label,
+                'prediction': pred,
+            })
     
     # Compute metrics and get per-sample details
     metrics, per_sample = _compute_metrics_property_internal(outputs)
@@ -148,9 +186,15 @@ def _compute_metrics_property_internal(outputs):
         gt_string = o['ground_truth']
         pred_string = o['prediction']
         
-        # Extract numerical values from strings
-        gt_value = _extract_number(gt_string)
-        pred_value = _extract_number(pred_string)
+        # Check if values are already extracted (from prediction head mode)
+        if 'ground_truth_value' in o and 'prediction_value' in o:
+            # Values already extracted
+            gt_value = o['ground_truth_value']
+            pred_value = o['prediction_value']
+        else:
+            # Extract numerical values from strings (text generation mode)
+            gt_value = _extract_number(gt_string)
+            pred_value = _extract_number(pred_string)
         
         # Check if both values are valid
         valid = (gt_value is not None) and (pred_value is not None)
@@ -241,6 +285,7 @@ def _extract_number(text):
     - With units: "42.5 kcal/mol", "-3.14 eV"
     - In sentences: "The value is 42.5"
     - Scientific notation: "1.5e-3", "2.3E+5"
+    - Malformed numbers: "0.0000.0" -> extracts first valid number
     
     Args:
         text: String potentially containing a number
@@ -258,7 +303,8 @@ def _extract_number(text):
     # Matches: 42, -3.14, 1.5e-3, -2.3E+5, etc.
     patterns = [
         r'[-+]?\d+\.?\d*[eE][-+]?\d+',  # Scientific notation
-        r'[-+]?\d*\.\d+',                # Decimal numbers
+        r'[-+]?\d*\.\d+',                # Decimal numbers (match .5 or 0.5)
+        r'[-+]?\d+\.',                   # Numbers ending with period (0., -0.)
         r'[-+]?\d+',                     # Integers
     ]
     
@@ -266,8 +312,10 @@ def _extract_number(text):
         matches = re.findall(pattern, text_clean)
         if matches:
             try:
-                # Return the first number found
-                return float(matches[0])
+                # Return the first number found, strip trailing periods
+                num_str = matches[0].rstrip('.')
+                if num_str and num_str not in ['-', '+']:  # Ensure it's not just a sign
+                    return float(num_str)
             except (ValueError, IndexError):
                 continue
     

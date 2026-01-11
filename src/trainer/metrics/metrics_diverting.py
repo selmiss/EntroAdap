@@ -1,23 +1,24 @@
 """Metrics dispatcher for routing to different metric computation functions."""
 
 
-def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_prefix="eval", categories=None, prompts=None):
+def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_prefix="eval", categories=None, prompts=None, direct_predictions=None):
     """
     Dispatch to appropriate metrics computation based on eval_metrics setting.
     
     Args:
-        eval_metrics: Type of metrics to compute ('text', 'qa', 'molgen', 'molprop', or 'none')
-        predictions: List of predicted token ID arrays
+        eval_metrics: Type of metrics to compute ('text', 'qa', 'molgen', 'molprop', 'recognition', 'true_false', or 'none')
+        predictions: List of predicted token ID arrays (or None if using direct_predictions)
         labels: List of ground truth token ID arrays
         tokenizer: Tokenizer for decoding
         metric_key_prefix: Prefix for metric keys in output
         categories: Optional list of category/task names for each sample
         prompts: Optional list of prompt token ID arrays
+        direct_predictions: Optional numpy array of direct numeric predictions from regression/classification head
     
     Returns:
         Tuple of (metrics_dict, detailed_results) where detailed_results can be None
     """
-    if eval_metrics == "none" or not predictions:
+    if eval_metrics == "none" or (not predictions and direct_predictions is None):
         return {}, None
     
     try:
@@ -84,10 +85,15 @@ def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_pre
             
         elif eval_metrics == "molprop":
             from src.trainer.metrics.mol_property import compute_metrics_mol_property_detailed
-            metrics, detailed_results = compute_metrics_mol_property_detailed(predictions, labels, tokenizer, prompts=prompts)
+            metrics, detailed_results = compute_metrics_mol_property_detailed(
+                predictions, labels, tokenizer, prompts=prompts, direct_predictions=direct_predictions
+            )
             
             print(f"\n{'='*70}")
-            print(f"Molecular Property Prediction Metrics ({metric_key_prefix}):")
+            if direct_predictions is not None:
+                print(f"Molecular Property Prediction Metrics (Regression Head) ({metric_key_prefix}):")
+            else:
+                print(f"Molecular Property Prediction Metrics (Text Generation) ({metric_key_prefix}):")
             print(f"{'='*70}")
             print(f"{'Metric':<20} {'Value':<15}")
             print(f"{'-'*70}")
@@ -98,6 +104,61 @@ def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_pre
             print(f"{'Pearson':<20} {metrics['pearson']:.4f}")
             print(f"{'Valid Ratio':<20} {metrics['valid_ratio']*100:.2f}%")
             print(f"{'='*70}\n")
+            
+        elif eval_metrics == "recognition":
+            from src.trainer.metrics.recogntion import compute_metrics_recognition_detailed
+            metrics, detailed_results = compute_metrics_recognition_detailed(predictions, labels, tokenizer, categories, prompts)
+            
+            print(f"\n{'='*70}")
+            print(f"Entity Recognition Metrics ({metric_key_prefix}):")
+            print(f"{'='*70}")
+            
+            category_metrics = {k: v for k, v in metrics.items() if k.startswith('f1_')}
+            if category_metrics:
+                print("\nResults by Category:")
+                print(f"{'-'*70}")
+                print(f"{'Category':<25} {'Precision':<12} {'Recall':<12} {'F1':<15}")
+                print(f"{'-'*70}")
+                for key in sorted(category_metrics.keys()):
+                    category = key.replace('f1_', '')
+                    f1 = metrics[f'f1_{category}']
+                    precision = metrics[f'precision_{category}']
+                    recall = metrics[f'recall_{category}']
+                    print(f"{category:<25} {precision*100:>6.2f}%     {recall*100:>6.2f}%     {f1*100:>6.2f}%")
+                print(f"{'-'*70}")
+            
+            print(f"\n{'Overall':<25} {metrics['precision']*100:>6.2f}%     {metrics['recall']*100:>6.2f}%     {metrics['f1']*100:>6.2f}%")
+            print(f"{'='*70}\n")
+            
+        elif eval_metrics == "true_false":
+            from src.trainer.metrics.true_false import compute_metrics_true_false_detailed
+            metrics, detailed_results = compute_metrics_true_false_detailed(predictions, labels, tokenizer, categories, prompts)
+            
+            print(f"\n{'='*70}")
+            print(f"True/False Question Metrics ({metric_key_prefix}):")
+            print(f"{'='*70}")
+            
+            # Display per-category results if available
+            category_metrics = {k: v for k, v in metrics.items() if k.startswith('accuracy_')}
+            if category_metrics:
+                print("\nResults by Category:")
+                print(f"{'-'*70}")
+                print(f"{'Category':<25} {'Correct':<10} {'Total':<10} {'Accuracy':<15}")
+                print(f"{'-'*70}")
+                for key in sorted(category_metrics.keys()):
+                    category = key.replace('accuracy_', '')
+                    accuracy = metrics[f'accuracy_{category}']
+                    correct = metrics[f'correct_{category}']
+                    total = metrics[f'total_{category}']
+                    accuracy_pct = f"{accuracy*100:.2f}%"
+                    print(f"{category:<25} {correct:<10} {total:<10} {accuracy_pct:<15}")
+                print(f"{'-'*70}")
+            
+            # Display overall results
+            overall_accuracy_pct = f"{metrics['accuracy']*100:.2f}%"
+            print(f"\n{'Overall':<25} {metrics['correct']:<10} {metrics['total']:<10} {overall_accuracy_pct:<15}")
+            print(f"{'='*70}\n")
+            
         else:
             metrics = {}
         

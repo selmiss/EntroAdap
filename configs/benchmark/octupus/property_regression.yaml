@@ -1,0 +1,139 @@
+# Prediction Head for Molecular Property Prediction - Example Config
+
+# This config uses a regression head to predict molecular properties directly
+# instead of generating numbers token-by-token
+
+# Comment out prepared_checkpoint_path to start fresh
+# prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v2
+
+# Instead, load base LLM and build Octopus from scratch
+prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v2
+
+output_dir: ./checkpoints/benchmark/octopus/property-regression-llama-3.1-8b-v2
+run_name: "property-regression-llama-3.1-8b-v2"
+
+dataset_train_file: data/benchmark/mol_prop/train.parquet
+dataset_eval_file: data/benchmark/mol_prop/test.parquet
+# dataset_train_max_samples: 20000  # Uncomment to limit training samples
+# dataset_eval_max_samples: 20    # Uncomment to limit evaluation samples
+
+sequence_prepend_key: selfies
+dataset_train_split: train
+dataset_test_split: test
+
+do_train: true
+do_eval: true
+
+learning_rate: 5e-5
+num_train_epochs: 5
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 16
+
+warmup_steps: 50
+log_level: info
+
+logging_steps: 10
+save_strategy: "epoch"
+save_steps: 1
+save_total_limit: 3
+
+eval_strategy: "epoch"
+eval_steps: 1
+
+# ============================================================================
+# PREDICTION HEAD CONFIGURATION
+# ============================================================================
+
+# Task type: 'regression' for continuous values, 'classification' for categories
+task_type: "regression"
+
+# Pooling strategy for hidden states
+# - "last": Use last token's hidden state (default, fast)
+# - "mean": Average all token hidden states (more robust)
+# - "attention": Learned attention pooling (most flexible, slowest)
+pooling_strategy: "last"
+
+# Optional intermediate hidden dimension for prediction head
+# If None, uses single linear projection
+# If set (e.g., 512), uses two-layer projection with non-linearity
+head_hidden_dim: 512
+
+# Dropout for prediction head
+head_dropout: 0.1
+
+# ============================================================================
+# DUAL LOSS CONFIGURATION (RECOMMENDED!)
+# ============================================================================
+
+# Use both LM loss and prediction head loss for multi-task learning
+# Benefits:
+# 1. Model can generate explanations AND predict accurate values
+# 2. Better representations through dual objective
+# 3. Improved generalization
+use_dual_loss: true
+
+# Weight for language modeling loss (0.0 to 1.0)
+# Total loss = lm_loss_weight * lm_loss + (1 - lm_loss_weight) * head_loss
+# Examples:
+# - 0.5: Equal weight to both tasks (balanced)
+# - 0.3: Prioritize prediction accuracy (0.3 LM + 0.7 head)
+# - 0.7: Prioritize text generation quality (0.7 LM + 0.3 head)
+lm_loss_weight: 0.3
+
+# ============================================================================
+# STANDARD CONFIGURATION
+# ============================================================================
+
+# Evaluation metrics - keep as "molprop" to track generation quality
+# The prediction head metrics will be logged separately
+eval_metrics: "molprop"
+
+# Max tokens for text generation (used for eval_metrics)
+max_new_tokens: 64
+
+report_to: ["wandb"]
+wandb_project: "octopus-benchmark"
+
+remove_unused_columns: false
+
+dataloader_num_workers: 8
+dataloader_prefetch_factor: 4
+dataloader_pin_memory: true
+dataloader_persistent_workers: true
+
+use_custom_model: true
+encoder_hidden_dim: 256
+modality_embedding_dim: 4096
+num_fusion_blocks: 8
+num_attention_heads: 32
+fusion_hidden_dim: null
+fusion_intermediate_dim: null
+dropout: 0.1
+max_seq_length: 2048
+
+max_atoms: 30000
+max_edges: 500000
+skip_on_error: true
+
+gradient_checkpointing: true
+bf16: true
+use_liger_kernel: false
+optim: adamw_torch
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1e-8
+weight_decay: 0.01
+
+freeze_encoder: true
+freeze_llm: false
+freeze_gates: false
+freeze_fusion_blocks: false
+freeze_projections: false
+
+max_grad_norm: 1.0
+
+use_peft: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05

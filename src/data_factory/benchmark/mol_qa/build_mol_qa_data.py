@@ -92,27 +92,22 @@ def process_molecule_qa(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             
             entities.append(entity)
         
-        # Build dataset entry (multi-entity format if multiple, single if one)
-        is_multi = len(entities) > 1
-        
+        # Build dataset entry (always use list format for consistency)
         data = {
             'modality': 'molecule',
             'smiles': smiles_list,
             'cid': row.get('cid', ''),
             'category': row.get('category', ''),
             'messages': messages,
+            'node_feat': [e['node_feat'] for e in entities],
+            'pos': [e['pos'] for e in entities],
+            'edge_index': [e['edge_index'] for e in entities],
+            'chem_edge_index': [e['chem_edge_index'] for e in entities],
+            'chem_edge_feat_cat': [e['chem_edge_feat_cat'] for e in entities],
         }
         
-        if is_multi:
-            data['node_feat'] = [e['node_feat'] for e in entities]
-            data['pos'] = [e['pos'] for e in entities]
-            data['edge_index'] = [e['edge_index'] for e in entities]
-            data['chem_edge_index'] = [e['chem_edge_index'] for e in entities]
-            data['chem_edge_feat_cat'] = [e['chem_edge_feat_cat'] for e in entities]
-            if 'edge_feat_dist' in entities[0]:
-                data['edge_feat_dist'] = [e['edge_feat_dist'] for e in entities]
-        else:
-            data.update(entities[0])
+        if 'edge_feat_dist' in entities[0]:
+            data['edge_feat_dist'] = [e['edge_feat_dist'] for e in entities]
         
         return data
     
@@ -278,11 +273,13 @@ def build_mol_qa_dataset(
                     for key in ['node_feat', 'pos', 'edge_index', 'chem_edge_index']:
                         if key in first:
                             val = first[key]
-                            if isinstance(val, list) and len(val) > 0 and isinstance(val[0], list) and len(val[0]) > 0 and isinstance(val[0][0], list):
-                                print(f"    {key:20s}: multi-entity format ({len(val)} entities)")
+                            # All molecules now stored in list format
+                            if isinstance(val, list) and len(val) > 0:
+                                num_entities = len(val)
+                                entity_desc = f"{num_entities} entity" if num_entities == 1 else f"{num_entities} entities"
+                                print(f"    {key:20s}: list format ({entity_desc})")
                             else:
-                                arr = np.array(val)
-                                print(f"    {key:20s}: shape {arr.shape}")
+                                print(f"    {key:20s}: {type(val)}")
     
     print("\n✅ Molecule QA dataset building complete!")
 

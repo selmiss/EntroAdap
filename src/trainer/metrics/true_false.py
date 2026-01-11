@@ -1,13 +1,17 @@
-"""Metrics for multiple choice QA tasks."""
+"""Metrics for true/false (yes/no) questions."""
 
 import re
 import numpy as np
 from collections import defaultdict
 
 
-def compute_metrics_multiple_choice(predictions, labels, tokenizer, categories=None):
+def compute_metrics_true_false(predictions, labels, tokenizer, categories=None):
     """
-    Compute accuracy for multiple choice QA with optional per-category breakdown.
+    Compute accuracy for true/false (yes/no) questions with optional per-category breakdown.
+    
+    The evaluator extracts answers by:
+    1. First checking if the first token is "Yes"/"No"/"True"/"False"
+    2. If not, searching for the first occurrence of "yes"/"no"/"true"/"false" in the text
     
     Args:
         predictions: List of predicted token ID arrays
@@ -28,50 +32,21 @@ def compute_metrics_multiple_choice(predictions, labels, tokenizer, categories=N
         decoded_preds.append(decoded_pred)
         decoded_labels.append(decoded_label)
     
-    # Support two patterns:
-    # Pattern 1: "Answer: A" or "Answer: B"
-    # Pattern 2: "The final/correct answer is (A)" - case-insensitive, flexible
-    pattern1 = r"[Aa]nswer:\s*([A-Da-d])"
-    pattern2 = r"(?i)(?:final|correct)\s+answer\s+(?:is\s+)?\(?([A-Da-d])\)?"
-    
     # Track overall and per-category results
     category_stats = defaultdict(lambda: {'correct': 0, 'total': 0})
     overall_correct = 0
     overall_total = 0
     
     for idx, (pred, label) in enumerate(zip(decoded_preds, decoded_labels)):
-        # Extract answer from label - try both patterns
-        label_match = re.search(pattern1, label)
-        if not label_match:
-            label_match = re.search(pattern2, label)
-        if not label_match:
+        # Extract answer from label
+        answer = extract_yes_no_answer(label)
+        if answer is None:
             continue
-        answer = label_match.group(1).upper()
         
-        # Extract prediction from response - try both patterns
-        pred_match = re.search(pattern1, pred)
-        if not pred_match:
-            pred_match = re.search(pattern2, pred)
-        
-        if pred_match:
-            prediction = pred_match.group(1).upper()
-        else:
-            # Fallback: look for A/B/C/D anywhere after "Answer:" or "final answer is"
-            answer_split = pred.split("Answer:") if "Answer:" in pred else pred.split("final answer is")
-            if len(answer_split) > 1:
-                answer_part = answer_split[-1].strip()
-                if 'A' in answer_part:
-                    prediction = 'A'
-                elif 'B' in answer_part:
-                    prediction = 'B'
-                elif 'C' in answer_part:
-                    prediction = 'C'
-                elif 'D' in answer_part:
-                    prediction = 'D'
-                else:
-                    prediction = 'None'
-            else:
-                prediction = 'None'
+        # Extract prediction from response
+        prediction = extract_yes_no_answer(pred)
+        if prediction is None:
+            prediction = 'unknown'
         
         is_correct = (prediction == answer)
         
@@ -107,9 +82,9 @@ def compute_metrics_multiple_choice(predictions, labels, tokenizer, categories=N
     return metrics
 
 
-def compute_metrics_multiple_choice_detailed(predictions, labels, tokenizer, categories=None, prompts=None):
+def compute_metrics_true_false_detailed(predictions, labels, tokenizer, categories=None, prompts=None):
     """
-    Compute accuracy for multiple choice QA and return detailed per-sample results.
+    Compute accuracy for true/false questions and return detailed per-sample results.
     
     Args:
         predictions: List of predicted token ID arrays
@@ -138,12 +113,6 @@ def compute_metrics_multiple_choice_detailed(predictions, labels, tokenizer, cat
         decoded_preds.append(decoded_pred)
         decoded_labels.append(decoded_label)
     
-    # Support two patterns:
-    # Pattern 1: "Answer: A" or "Answer: B"
-    # Pattern 2: "The final/correct answer is (A)" - case-insensitive, flexible
-    pattern1 = r"[Aa]nswer:\s*([A-Da-d])"
-    pattern2 = r"(?i)(?:final|correct)\s+answer\s+(?:is\s+)?\(?([A-Da-d])\)?"
-    
     # Track overall and per-category results
     category_stats = defaultdict(lambda: {'correct': 0, 'total': 0})
     overall_correct = 0
@@ -151,38 +120,15 @@ def compute_metrics_multiple_choice_detailed(predictions, labels, tokenizer, cat
     detailed_results = []
     
     for idx, (pred, label) in enumerate(zip(decoded_preds, decoded_labels)):
-        # Extract answer from label - try both patterns
-        label_match = re.search(pattern1, label)
-        if not label_match:
-            label_match = re.search(pattern2, label)
-        if not label_match:
+        # Extract answer from label
+        answer = extract_yes_no_answer(label)
+        if answer is None:
             continue
-        answer = label_match.group(1).upper()
         
-        # Extract prediction from response - try both patterns
-        pred_match = re.search(pattern1, pred)
-        if not pred_match:
-            pred_match = re.search(pattern2, pred)
-        
-        if pred_match:
-            prediction = pred_match.group(1).upper()
-        else:
-            # Fallback: look for A/B/C/D anywhere after "Answer:" or "final answer is"
-            answer_split = pred.split("Answer:") if "Answer:" in pred else pred.split("final answer is")
-            if len(answer_split) > 1:
-                answer_part = answer_split[-1].strip()
-                if 'A' in answer_part:
-                    prediction = 'A'
-                elif 'B' in answer_part:
-                    prediction = 'B'
-                elif 'C' in answer_part:
-                    prediction = 'C'
-                elif 'D' in answer_part:
-                    prediction = 'D'
-                else:
-                    prediction = 'None'
-            else:
-                prediction = 'None'
+        # Extract prediction from response
+        prediction = extract_yes_no_answer(pred)
+        if prediction is None:
+            prediction = 'unknown'
         
         is_correct = (prediction == answer)
         
@@ -232,3 +178,51 @@ def compute_metrics_multiple_choice_detailed(predictions, labels, tokenizer, cat
     
     return metrics, detailed_results
 
+
+def extract_yes_no_answer(text):
+    """
+    Extract yes/no or true/false answer from text.
+    
+    Strategy:
+    1. Check if the first token (word) is Yes/No/True/False
+    2. If not, find the first occurrence of yes/no/true/false in the text
+    
+    Args:
+        text: String to extract answer from
+    
+    Returns:
+        'yes', 'no', or None if no answer found
+    """
+    if not text:
+        return None
+    
+    text_stripped = text.strip()
+    if not text_stripped:
+        return None
+    
+    # Extract first token (split by whitespace and punctuation)
+    first_token_match = re.match(r'^([a-zA-Z]+)', text_stripped)
+    if first_token_match:
+        first_token = first_token_match.group(1).lower()
+        if first_token in ['yes', 'true']:
+            return 'yes'
+        elif first_token in ['no', 'false']:
+            return 'no'
+    
+    # If first token check failed, search for first occurrence of yes/no/true/false
+    # Use case-insensitive word boundary matching
+    yes_match = re.search(r'\b(yes|true)\b', text, re.IGNORECASE)
+    no_match = re.search(r'\b(no|false)\b', text, re.IGNORECASE)
+    
+    # Return the one that appears first
+    if yes_match and no_match:
+        if yes_match.start() < no_match.start():
+            return 'yes'
+        else:
+            return 'no'
+    elif yes_match:
+        return 'yes'
+    elif no_match:
+        return 'no'
+    
+    return None

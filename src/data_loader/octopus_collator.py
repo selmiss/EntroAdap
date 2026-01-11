@@ -13,6 +13,12 @@ from datasets import Dataset, DatasetDict
 
 from .graph_batch_utils import merge_protein_graphs, merge_molecule_graphs
 
+try:
+    import selfies
+    SELFIES_AVAILABLE = True
+except ImportError:
+    SELFIES_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +43,7 @@ class MultiModalDataCollator:
     return_tensors: str = "pt"
     structure_tokens: List[str] = None
     insert_structure_if_missing: bool = True  # Insert structure token at end of user query if not found
+    skip_graph_loading: bool = False  # If True, skip loading graph data and set graph_data to None
     
     def __post_init__(self):
         """Set default structure tokens if not provided."""
@@ -122,6 +129,10 @@ class MultiModalDataCollator:
             - batch_tensor: [N] node-to-graph assignment
             - graph_indices: List[int] indices of which examples have graphs
         """
+        # Skip graph loading if flag is set
+        if self.skip_graph_loading:
+            return None
+        
         # Check if we have raw graph columns (HF dataset format)
         has_raw_columns = (
             len(features) > 0 and 
@@ -397,6 +408,12 @@ class MultiModalDataCollator:
         # Adjust patch positions for left-padding if needed
         self._adjust_patch_positions_for_padding(batch, features)
         
+        # Extract target values if present (for prediction head tasks)
+        if len(features) > 0 and 'target_value' in features[0]:
+            
+            target_values = torch.tensor([f['target_value'] for f in features], dtype=torch.float32)
+            batch['target_values'] = target_values
+        
         return batch
 
 
@@ -410,6 +427,8 @@ def preprocess_multimodal_dataset(
     max_atoms: Optional[int] = None,
     max_edges: Optional[int] = None,
     filter_before_tokenization: bool = False,
+    sequence_prepend_key: Optional[str] = None,
+    skip_graph_loading: bool = False,
 ) -> DatasetDict:
     """
     Preprocess multimodal dataset by tokenizing messages and creating labels.
@@ -434,12 +453,49 @@ def preprocess_multimodal_dataset(
         max_edges: Optional maximum number of edges per structure. Only used if filter_before_tokenization=True.
         filter_before_tokenization: If True, filter dataset before tokenization (can be slow).
             If False (default), filtering happens during training via skip_on_error in collator.
+        sequence_prepend_key: If set, prepend sequence data before structure tokens. 
+            'smiles' = raw SMILES, 'selfies' = SELFIES format (converts from SMILES if needed)
+        skip_graph_loading: If True, graph data will not be loaded (set to None in collator). 
+            This is useful for text-only training where graph features are not needed.
     
     Returns:
         Processed dataset with tokenized inputs, labels, and patch_position
     """
     if structure_tokens is None:
         structure_tokens = ["<STRUCTURE>", "<mol>", "<DNA>", "<RNA>"]
+    
+    def _smiles_to_selfies(smiles_str):
+        """Convert SMILES to SELFIES."""
+        if not SELFIES_AVAILABLE:
+            return smiles_str
+        try:
+            return selfies.encoder(smiles_str)
+        except Exception:
+            return smiles_str
+    
+    def _get_sequence_data(examples, idx, key):
+        """Get sequence data from examples, with optional format conversion.
+        
+        - If key='smiles': returns raw SMILES strings
+        - If key='selfies': returns SELFIES (converts from 'smiles' if 'selfies' not in data)
+        - Otherwise: returns data as-is from the specified key
+        """
+        if key == 'selfies':
+            if 'selfies' in examples and idx < len(examples['selfies']):
+                data = examples['selfies'][idx]
+                if data is not None:
+                    return data
+            if 'smiles' in examples and idx < len(examples['smiles']):
+                data = examples['smiles'][idx]
+                if data is not None:
+                    return _smiles_to_selfies(data) if isinstance(data, str) else [_smiles_to_selfies(s) for s in data]
+            return None
+        
+        if key not in examples or idx >= len(examples[key]):
+            return None
+        
+        return examples[key][idx]
+    
     def _has_graph_data(examples, idx):
         """Check if sample at idx has graph data."""
         if 'node_feat' in examples and idx < len(examples['node_feat']):
@@ -461,23 +517,36 @@ def preprocess_multimodal_dataset(
     
     def _preprocess_batch(examples):
         """Tokenize messages and prepare labels while preserving multimodal fields."""
-        # Early exit if already preprocessed
         if 'messages' not in examples and 'input_ids' in examples:
             return examples
         
-        # Step 1: Apply chat template & insert structure tokens if needed
         texts = []
         for idx, messages in enumerate(examples["messages"]):
             text = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=False
             )
             
-            # Insert structure token if missing and conditions are met
             if insert_structure_if_missing and _has_graph_data(examples, idx):
-                # Check if structure token already exists in text
                 has_structure_token = any(token in text for token in structure_tokens)
                 if not has_structure_token:
                     text = f"{structure_tokens[0]} " + text
+            
+            if sequence_prepend_key:
+                seq_data = _get_sequence_data(examples, idx, sequence_prepend_key)
+                if seq_data is not None:
+                    seq_list = [seq_data] if isinstance(seq_data, str) else list(seq_data)
+                    
+                    for token in structure_tokens:
+                        parts = text.split(token)
+                        if len(parts) > 1:
+                            replaced_parts = [parts[0]]
+                            for i in range(1, len(parts)):
+                                if i - 1 < len(seq_list):
+                                    replaced_parts.append(f"{seq_list[i-1]} {token}{parts[i]}")
+                                else:
+                                    replaced_parts.append(f"{token}{parts[i]}")
+                            text = ''.join(replaced_parts)
+                            break
             
             texts.append(text)
         
@@ -489,9 +558,6 @@ def preprocess_multimodal_dataset(
             padding=False,
         )
         
-        # Step 3: Generate labels
-        # We need message boundaries to properly mask/unmask tokens
-        # Collect all prefix texts for batch tokenization
         all_prefix_texts = []
         text_to_sample_idx = []
         
@@ -501,9 +567,25 @@ def preprocess_multimodal_dataset(
                 prefix_text = tokenizer.apply_chat_template(
                     prefix_messages, tokenize=False, add_generation_prompt=False
                 )
-                # Add structure token prefix if it was added to the full text
                 if texts[idx].startswith(structure_tokens[0]):
                     prefix_text = f"{structure_tokens[0]} " + prefix_text
+                
+                if sequence_prepend_key:
+                    seq_data = _get_sequence_data(examples, idx, sequence_prepend_key)
+                    if seq_data is not None:
+                        seq_list = [seq_data] if isinstance(seq_data, str) else list(seq_data)
+                        
+                        for token in structure_tokens:
+                            parts = prefix_text.split(token)
+                            if len(parts) > 1:
+                                replaced_parts = [parts[0]]
+                                for i in range(1, len(parts)):
+                                    if i - 1 < len(seq_list):
+                                        replaced_parts.append(f"{seq_list[i-1]} {token}{parts[i]}")
+                                    else:
+                                        replaced_parts.append(f"{token}{parts[i]}")
+                                prefix_text = ''.join(replaced_parts)
+                                break
                 
                 all_prefix_texts.append(prefix_text)
                 text_to_sample_idx.append((idx, msg_idx))
@@ -698,6 +780,7 @@ class MultiModalInferenceCollator:
     pad_to_multiple_of: Optional[int] = None
     return_tensors: str = "pt"
     structure_tokens: List[str] = None  # List of structure tokens to try
+    skip_graph_loading: bool = False  # If True, skip loading graph data and set graph_data to None
     
     def __post_init__(self):
         """Set default structure tokens if not provided."""
@@ -748,7 +831,23 @@ class MultiModalInferenceCollator:
         return batch
     
     def _collate_graph_data(self, features: List[Dict[str, Any]]) -> Optional[tuple]:
-        """Collate graph structures from multiple examples (same as training)."""
+        """
+        Collate graph structures from multiple examples.
+        
+        Supports two formats:
+        1. Pre-built graph_data dicts (from MultiModalSFTDataset)
+        2. Raw graph columns (from HF datasets: modality, node_feat, pos, edge_index, etc.)
+        
+        Returns:
+            (graph_data, batch_tensor, graph_indices) or None if no graphs present
+            - graph_data: {'modality': str, 'value': {...}} batched graph
+            - batch_tensor: [N] node-to-graph assignment
+            - graph_indices: List[int] indices of which examples have graphs
+        """
+        # Skip graph loading if flag is set
+        if self.skip_graph_loading:
+            return None
+        
         # Check if we have raw graph columns (HF dataset format)
         has_raw_columns = (
             len(features) > 0 and 
@@ -932,7 +1031,11 @@ class MultiModalInferenceCollator:
         return batched_graph, batch_tensor, graph_indices
     
     def _add_patch_positions(self, batch: Dict[str, Any], features: List[Dict[str, Any]]) -> None:
-        """Add patch positions to batch."""
+        """Add patch positions to batch (list of positions per sample where graph patches should be injected).
+        
+        patch_position can be either a single position (int) or list of positions (list[int]).
+        Output shape: [B, max_positions] where max_positions is the max number of positions across samples.
+        """
         if not any('patch_position' in f for f in features):
             return
         
@@ -986,7 +1089,7 @@ class MultiModalInferenceCollator:
         - attention_mask: [B, seq_len]
         - graph_data: {'modality': str, 'value': {...}} (if graphs present)
         - batch: [N] node-to-graph assignment (if graphs present)
-        - patch_positions: [B, max_positions] (if present)
+        - patch_positions: [B, max_positions] positions where patches should be inserted (if present)
         
         Also preserves reference data for evaluation:
         - reference_text: List of expected responses (if present)
@@ -1003,6 +1106,9 @@ class MultiModalInferenceCollator:
             graph_data, batch_tensor, graph_indices = graph_result
             batch['graph_data'] = graph_data
             batch['batch'] = batch_tensor
+            
+            # Store which examples in batch have graphs
+            # (useful if supporting mixed batches in future)
             batch['_graph_indices'] = graph_indices
         
         # Add patch positions

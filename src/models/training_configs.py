@@ -47,6 +47,10 @@ class OctopusConfig:
             Maximum edges per structure. Structures exceeding this will be skipped at runtime.
         skip_on_error (`bool`, *optional*, defaults to `True`):
             Skip samples that fail to load or exceed thresholds instead of raising errors.
+        insert_structure_if_missing (`bool`, *optional*, defaults to `True`):
+            Whether to insert structure tokens in the text if they are missing.
+        skip_graph_loading (`bool`, *optional*, defaults to `False`):
+            If True, skip loading graph data during training (graph_data will be set to None).
     """
     
     use_custom_model: bool = field(
@@ -105,6 +109,18 @@ class OctopusConfig:
         default=True,
         metadata={"help": "Skip samples that fail to load or exceed thresholds instead of raising errors."}
     )
+    sequence_prepend_key: Optional[str] = field(
+        default=None,
+        metadata={"help": "If set, prepend sequence data before structure tokens. Options: 'smiles' (raw SMILES strings), 'selfies' (SELFIES format, converts from SMILES if needed), or any other data column name."}
+    )
+    insert_structure_if_missing: bool = field(
+        default=True,
+        metadata={"help": "Whether to insert structure tokens in the text if they are missing. When enabled, structure tokens will be automatically added to ensure proper alignment between text and molecular structures."}
+    )
+    skip_graph_loading: bool = field(
+        default=False,
+        metadata={"help": "If True, skip loading graph data during training (graph_data will be set to None). This is useful for text-only training where only sequence information is used without graph features."}
+    )
     
     # Encoder checkpoint for initialization
     encoder_checkpoint_path: Optional[str] = field(
@@ -142,6 +158,36 @@ class OctopusConfig:
     freeze_projections: bool = field(
         default=False,
         metadata={"help": "Whether to freeze all projection layers (instr_proj, patch_proj, node_proj, output_proj) during training."}
+    )
+    
+    # Prediction head options (for regression/classification tasks)
+    task_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "Task type for prediction head: None (standard language modeling), 'regression' (continuous value prediction), or 'classification' (categorical prediction)."}
+    )
+    num_labels: Optional[int] = field(
+        default=2,
+        metadata={"help": "Number of labels for classification tasks. Only used when task_type='classification'."}
+    )
+    pooling_strategy: str = field(
+        default="last",
+        metadata={"help": "Pooling strategy for prediction head: 'last' (last token), 'mean' (average pooling), or 'attention' (learned attention pooling)."}
+    )
+    head_hidden_dim: Optional[int] = field(
+        default=None,
+        metadata={"help": "Optional hidden dimension for prediction head. If None, uses single-layer projection."}
+    )
+    head_dropout: float = field(
+        default=0.1,
+        metadata={"help": "Dropout rate for prediction head."}
+    )
+    use_dual_loss: bool = field(
+        default=False,
+        metadata={"help": "Whether to use both LLM loss and prediction head loss for multi-task learning. If False, only uses prediction head loss when task_type is set."}
+    )
+    lm_loss_weight: float = field(
+        default=0.5,
+        metadata={"help": "Weight for language modeling loss in dual loss setup. Total loss = lm_loss_weight * lm_loss + (1 - lm_loss_weight) * head_loss."}
     )
 
 

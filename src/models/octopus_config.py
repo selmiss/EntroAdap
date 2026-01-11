@@ -38,6 +38,18 @@ class FusionConfig:
 
 
 @dataclass
+class PredictionHeadConfig:
+    """Configuration for optional prediction head (regression/classification)."""
+    task_type: Optional[str] = None          # None, 'regression', or 'classification'
+    num_labels: int = 2                      # Number of labels for classification
+    pooling_strategy: str = 'last'           # 'last', 'mean', or 'attention'
+    hidden_dim: Optional[int] = None         # Intermediate hidden dim (None = single layer)
+    dropout: float = 0.1                     # Dropout rate
+    use_dual_loss: bool = False              # Use both LM loss and head loss
+    lm_loss_weight: float = 0.5              # Weight for LM loss in dual setup (0.0-1.0)
+
+
+@dataclass
 class OctopusConfig:
     """
     Complete configuration for Octopus.
@@ -47,12 +59,14 @@ class OctopusConfig:
             encoder=EncoderConfig(hidden_dim=256, num_layers=6),
             patching=PatchingConfig(k_max=32, r_max=64),
             fusion=FusionConfig(num_blocks=4, num_heads=8),
+            prediction_head=PredictionHeadConfig(task_type='regression'),
         )
         model = Octopus(llm_model=llm, config=config)
     """
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     patching: PatchingConfig = field(default_factory=PatchingConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
+    prediction_head: PredictionHeadConfig = field(default_factory=PredictionHeadConfig)
     
     @classmethod
     def from_dict(cls, config_dict: dict) -> 'OctopusConfig':
@@ -60,7 +74,13 @@ class OctopusConfig:
         encoder_cfg = EncoderConfig(**config_dict.get('encoder', {}))
         patching_cfg = PatchingConfig(**config_dict.get('patching', {}))
         fusion_cfg = FusionConfig(**config_dict.get('fusion', {}))
-        return cls(encoder=encoder_cfg, patching=patching_cfg, fusion=fusion_cfg)
+        prediction_head_cfg = PredictionHeadConfig(**config_dict.get('prediction_head', {}))
+        return cls(
+            encoder=encoder_cfg,
+            patching=patching_cfg,
+            fusion=fusion_cfg,
+            prediction_head=prediction_head_cfg
+        )
     
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
@@ -68,6 +88,7 @@ class OctopusConfig:
             'encoder': self.encoder.__dict__,
             'patching': self.patching.__dict__,
             'fusion': self.fusion.__dict__,
+            'prediction_head': self.prediction_head.__dict__,
         }
 
 

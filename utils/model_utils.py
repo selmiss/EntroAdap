@@ -13,6 +13,7 @@ from src.models.octopus_config import (
     EncoderConfig,
     PatchingConfig,
     FusionConfig,
+    PredictionHeadConfig,
 )
 from tqdm import tqdm
 
@@ -210,10 +211,26 @@ def load_prepared_octopus_from_checkpoint(
             intermediate_dim=multimodal_config.fusion_intermediate_dim,
             dropout=multimodal_config.dropout,
         ),
+        prediction_head=PredictionHeadConfig(
+            task_type=getattr(multimodal_config, 'task_type', None),
+            num_labels=getattr(multimodal_config, 'num_labels', 2),
+            pooling_strategy=getattr(multimodal_config, 'pooling_strategy', 'last'),
+            hidden_dim=getattr(multimodal_config, 'head_hidden_dim', None),
+            dropout=getattr(multimodal_config, 'head_dropout', 0.1),
+            use_dual_loss=getattr(multimodal_config, 'use_dual_loss', False),
+            lm_loss_weight=getattr(multimodal_config, 'lm_loss_weight', 0.5),
+        ),
     )
     
     # Create Octopus model (this initializes the architecture)
     logger.info("Creating Octopus architecture")
+    
+    # Log prediction head config if enabled
+    if mm_config.prediction_head.task_type is not None:
+        logger.info(f"Configuring prediction head: task_type={mm_config.prediction_head.task_type}, "
+                   f"use_dual_loss={mm_config.prediction_head.use_dual_loss}, "
+                   f"lm_loss_weight={mm_config.prediction_head.lm_loss_weight}")
+    
     multimodal_model = Octopus(llm_model=llm_model, config=mm_config)
 
     if getattr(model_args, "use_peft", False):
@@ -356,10 +373,26 @@ def _load_octopus_from_checkpoint(
             intermediate_dim=multimodal_config.fusion_intermediate_dim,
             dropout=multimodal_config.dropout,
         ),
+        prediction_head=PredictionHeadConfig(
+            task_type=getattr(multimodal_config, 'task_type', None),
+            num_labels=getattr(multimodal_config, 'num_labels', 2),
+            pooling_strategy=getattr(multimodal_config, 'pooling_strategy', 'last'),
+            hidden_dim=getattr(multimodal_config, 'head_hidden_dim', None),
+            dropout=getattr(multimodal_config, 'head_dropout', 0.1),
+            use_dual_loss=getattr(multimodal_config, 'use_dual_loss', False),
+            lm_loss_weight=getattr(multimodal_config, 'lm_loss_weight', 0.5),
+        ),
     )
     
     # Create Octopus model (this initializes the architecture)
     logger.info("Creating Octopus architecture")
+    
+    # Log prediction head config if enabled
+    if mm_config.prediction_head.task_type is not None:
+        logger.info(f"Configuring prediction head: task_type={mm_config.prediction_head.task_type}, "
+                   f"use_dual_loss={mm_config.prediction_head.use_dual_loss}, "
+                   f"lm_loss_weight={mm_config.prediction_head.lm_loss_weight}")
+    
     multimodal_model = Octopus(llm_model=llm_model, config=mm_config)
     
     # Load Octopus-specific weights from checkpoint
@@ -550,7 +583,22 @@ def get_custom_model(
             intermediate_dim=multimodal_config.fusion_intermediate_dim,
             dropout=float(multimodal_config.dropout),
         ),
+        prediction_head=PredictionHeadConfig(
+            task_type=getattr(multimodal_config, 'task_type', None),
+            num_labels=getattr(multimodal_config, 'num_labels', 2),
+            pooling_strategy=getattr(multimodal_config, 'pooling_strategy', 'last'),
+            hidden_dim=getattr(multimodal_config, 'head_hidden_dim', None),
+            dropout=getattr(multimodal_config, 'head_dropout', 0.1),
+            use_dual_loss=getattr(multimodal_config, 'use_dual_loss', False),
+            lm_loss_weight=getattr(multimodal_config, 'lm_loss_weight', 0.5),
+        ),
     )
+
+    # Log prediction head config if enabled
+    if mm_config.prediction_head.task_type is not None:
+        logger.info(f"Configuring prediction head: task_type={mm_config.prediction_head.task_type}, "
+                   f"use_dual_loss={mm_config.prediction_head.use_dual_loss}, "
+                   f"lm_loss_weight={mm_config.prediction_head.lm_loss_weight}")
 
     # Create the multi-modal wrapper with the (possibly PEFT-wrapped) LLM
     multimodal_model = Octopus(llm_model=llm_model, config=mm_config)
