@@ -24,7 +24,7 @@ class MultiModalSFTTrainer(SFTTrainer):
         Initialize trainer with optional metrics computation.
         
         Args:
-            eval_metrics: Evaluation metrics to compute - 'text', 'qa', 'molgen', or 'none'
+            eval_metrics: Evaluation metrics to compute - 'text', 'qa', 'molgen', 'mae', or 'none'
         """
         super().__init__(*args, **kwargs)
         self.eval_metrics = eval_metrics

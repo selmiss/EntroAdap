@@ -6,7 +6,7 @@ def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_pre
     Dispatch to appropriate metrics computation based on eval_metrics setting.
     
     Args:
-        eval_metrics: Type of metrics to compute ('text', 'qa', 'molgen', or 'none')
+        eval_metrics: Type of metrics to compute ('text', 'qa', 'molgen', 'mae', or 'none')
         predictions: List of predicted token ID arrays
         labels: List of ground truth token ID arrays
         tokenizer: Tokenizer for decoding
@@ -80,6 +80,23 @@ def compute_metrics(eval_metrics, predictions, labels, tokenizer, metric_key_pre
             print(f"{'MACCS FTS':<20} {metrics['maccs_fts']:.4f}")
             print(f"{'Morgan FTS':<20} {metrics['morgan_fts']:.4f}")
             print(f"{'Validity':<20} {metrics['validity']*100:.2f}%")
+            print(f"{'='*70}\n")
+            
+        elif eval_metrics == "mae":
+            from src.trainer.metrics.mol_property import compute_metrics_mol_property_detailed
+            metrics, detailed_results = compute_metrics_mol_property_detailed(predictions, labels, tokenizer, prompts=prompts)
+            
+            print(f"\n{'='*70}")
+            print(f"Molecular Property Prediction Metrics ({metric_key_prefix}):")
+            print(f"{'='*70}")
+            print(f"{'Metric':<20} {'Value':<15}")
+            print(f"{'-'*70}")
+            print(f"{'MAE':<20} {metrics['mae']:.4f}")
+            print(f"{'MSE':<20} {metrics['mse']:.4f}")
+            print(f"{'RMSE':<20} {metrics['rmse']:.4f}")
+            print(f"{'R²':<20} {metrics['r2']:.4f}")
+            print(f"{'Pearson':<20} {metrics['pearson']:.4f}")
+            print(f"{'Valid Ratio':<20} {metrics['valid_ratio']*100:.2f}%")
             print(f"{'='*70}\n")
         else:
             metrics = {}
