@@ -1,8 +1,9 @@
 prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v2
-output_dir: ./checkpoints/benchmark/octopus/molgen-llama-3.1-8b
+output_dir: ./checkpoints/benchmark/octopus/molgen-llama-3.1-8b-v2
 
 dataset_train_file: data/benchmark/mol_gen/train.parquet
 dataset_eval_file: data/benchmark/mol_gen/test.parquet
+sequence_prepend_key: selfies
 # Optional: Limit the number of samples for training and evaluation
 dataset_train_max_samples: 100000  # Uncomment to limit training samples
 dataset_eval_max_samples: 800    # Uncomment to limit evaluation samples
@@ -12,8 +13,8 @@ dataset_test_split: test
 do_train: true
 do_eval: true
 
-learning_rate: 1e-5
-num_train_epochs: 2
+learning_rate: 5e-5
+num_train_epochs: 4
 per_device_train_batch_size: 2
 per_device_eval_batch_size: 2
 gradient_accumulation_steps: 16
@@ -49,7 +50,7 @@ max_new_tokens: 512
 
 report_to: ["wandb"]
 wandb_project: "octopus-benchmark"
-run_name: "molgen-llama-3.1-8b"
+run_name: "molgen-llama-3.1-8b-v2"
 
 remove_unused_columns: false
 

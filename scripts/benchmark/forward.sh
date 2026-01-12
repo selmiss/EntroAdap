@@ -1,8 +1,8 @@
 GPU_IDS=0
-export MASTER_PORT=29500
+export CUDA_VISIBLE_DEVICES=${GPU_IDS}
 
 # Load configuration from YAML file
 CONFIG_FILE="configs/benchmark/octupus/forward.yaml"
 
-deepspeed --include localhost:${GPU_IDS} --master_port ${MASTER_PORT} src/runner/sft.py \
+python src/runner/sft.py \
     --config ${CONFIG_FILE}

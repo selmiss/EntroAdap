@@ -3,7 +3,7 @@ output_dir: ./checkpoints/benchmark/octopus/reagent-llama-3.1-8b-seq
 
 dataset_train_file: data/benchmark/reagent_prediction/train.parquet
 dataset_eval_file: data/benchmark/reagent_prediction/test.parquet
-sequence_prepend_key: smiles
+sequence_prepend_key: selfies
 insert_structure_if_missing: false
 skip_graph_loading: true
 # Optional: Limit the number of samples for training and evaluation

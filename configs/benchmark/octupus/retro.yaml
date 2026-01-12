@@ -1,8 +1,9 @@
 prepared_checkpoint_path: checkpoints/octopus/Llama-3.1-8B-s3-v2
-output_dir: ./checkpoints/benchmark/octopus/retro-llama-3.1-8b
+output_dir: ./checkpoints/benchmark/octopus/retro-llama-3.1-8b-v2
 
 dataset_train_file: data/benchmark/retrosynthesis/train.parquet
 dataset_eval_file: data/benchmark/retrosynthesis/test.parquet
+sequence_prepend_key: selfies
 # Optional: Limit the number of samples for training and evaluation
 dataset_train_max_samples: 60000  # Uncomment to limit training samples
 dataset_eval_max_samples: 1000    # Uncomment to limit evaluation samples
@@ -49,7 +50,7 @@ max_new_tokens: 512
 
 report_to: ["wandb"]
 wandb_project: "octopus-benchmark"
-run_name: "retro-llama-3.1-8b"
+run_name: "retro-llama-3.1-8b-v2"
 
 remove_unused_columns: false
 
