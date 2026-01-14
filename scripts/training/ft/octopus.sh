@@ -10,17 +10,17 @@
 : "${DATA_DIR:?Environment variable DATA_DIR not set}"
 : "${CHECKPOINT_DIR:?Environment variable CHECKPOINT_DIR not set}"
 
-GPU_IDS=7
+GPU_IDS=0
 # export MASTER_PORT=29507
 export CUDA_VISIBLE_DEVICES=${GPU_IDS}
 
 # Load configuration from YAML file
-# CONFIG_FILE="configs/sft/octopus/octopus_8B_s2_v3.yaml"
+CONFIG_FILE="configs/sft/octopus/octopus_8B_s2_v3.yaml"
 
 # # deepspeed --include localhost:${GPU_IDS} --master_port ${MASTER_PORT} src/runner/sft.py \
 # #     --config ${CONFIG_FILE}
 
-# python src/runner/sft.py --config ${CONFIG_FILE}
+python src/runner/sft.py --config ${CONFIG_FILE}
 
 # Load configuration from YAML file
 CONFIG_FILE="configs/sft/octopus/octopus_8B_s3_v3.yaml"
