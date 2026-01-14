@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -105,51 +105,37 @@ class PatchOutput:
 def soft_patch_grow(
     instr: torch.Tensor,                 # [G, Di]
     x: torch.Tensor,                     # [N, D]
-    edge_index: torch.Tensor,            # [2, E]
+    pos: torch.Tensor,                   # [N, 3]
     batch: torch.Tensor,                 # [N]
     anchor_gate: AnchorGate,
-    edge_gate: EdgeGate,
-    edge_attr: Optional[torch.Tensor] = None,
-    k_max: int = 32,                     # max number of anchors/patches per graph
-    r_max: int = 64,                     # max atoms kept per patch (top-r truncation)
-    steps: int = 3,                      # growth turns (not hops count in BFS sense, but similar)
-    keep_ratio: float = 0.5,             # how much membership stays each turn
-    dynamic_k_mass: Optional[float] = 0.8,  # e.g., 0.8 to select anchors until cumulative prob mass
+    k_max: int = 32,
+    r_max: Optional[int] = 64,           # top-r nodes per patch (optional, nondifferentiable)
+    dynamic_k_mass: Optional[float] = 0.8,
+    beta: Optional[float] = None,        # distance scale; if None uses 1.0
+    tau: float = 0.1,                    # softmax temperature
+    use_anchor_bias: bool = True,        # add anchor logit bias to each patch
     return_membership: bool = False,
 ) -> PatchOutput:
     """
-    End-to-end differentiable-ish patching:
-      1) AnchorGate scores nodes, choose anchors per graph (top-k or mass threshold with cap).
-      2) EdgeGate scores edges, convert to expansion weights.
-      3) For each anchor, grow soft membership for `steps` turns by diffusing membership along edges.
-      4) After each turn, optionally enforce a hard per-patch budget via top-r truncation.
-      5) Pool patch embedding as membership-weighted sum of node embeddings.
+    Differentiable patching without BFS:
+      1) AnchorGate scores nodes, select anchors per graph (top-k or mass threshold).
+      2) Assign every node to anchors with soft weights based on Euclidean distance in pos.
+      3) Pool patch tokens as assignment-weighted averages of node embeddings.
 
     Notes:
-      - Hard top-k and top-r are non-differentiable. This is still trainable in practice.
-        If you want fully soft training, set r_max=None behavior by skipping truncation.
-      - This implementation loops over graphs to keep logic simple and correct.
-
-    Returns:
-      patch_emb: [G, K, D], where K = actual_max_patches <= k_max (dynamically padded per batch)
-      patch_mask: [G, K] indicates valid patches
-      anchor_index: [G, K] global node indices or -1
-      membership: optional [G, K, N] (can be very memory heavy)
+      - Anchor selection is still discrete (top-k or mass). Gradients flow to selected anchors.
+      - If r_max is not None, per-patch truncation via top-k is nondifferentiable. Set r_max=None for fully soft pooling.
     """
     device = x.device
     G = int(instr.size(0))
     N, D = x.size(0), x.size(1)
 
+    if beta is None:
+        beta = 1.0
+
     # 1) anchor logits per node
     anchor_logits = anchor_gate(instr, x, batch)  # [N]
 
-    # 2) edge expansion logits per edge
-    edge_logits = edge_gate(instr, x, edge_index, batch, edge_attr=edge_attr)  # [E]
-
-    # Convert edge logits to positive weights. Sigmoid is simplest and stable.
-    edge_w = torch.sigmoid(edge_logits)  # [E] in (0,1)
-
-    # Prepare outputs (initially allocate k_max, will truncate to actual max later)
     patch_emb = torch.zeros((G, k_max, D), device=device, dtype=x.dtype)
     patch_mask = torch.zeros((G, k_max), device=device, dtype=torch.bool)
     anchor_index_out = torch.full((G, k_max), -1, device=device, dtype=torch.long)
@@ -157,13 +143,10 @@ def soft_patch_grow(
     membership_out = None
     if return_membership:
         membership_out = torch.zeros((G, k_max, N), device=device, dtype=x.dtype)
-    
-    # Track actual maximum number of patches across all graphs in batch
+
     actual_max_k = 0
 
-    # Helper: pick anchors for one graph
     def _select_anchors(node_ids: torch.Tensor) -> torch.Tensor:
-        # node_ids: global node ids for this graph
         logits = anchor_logits[node_ids]
         if logits.numel() == 0:
             return node_ids.new_empty((0,), dtype=torch.long)
@@ -173,7 +156,6 @@ def soft_patch_grow(
             top = torch.topk(logits, k=k, largest=True).indices
             return node_ids[top]
 
-        # Mass-based: select until cumulative softmax mass reaches threshold, cap at k_max.
         probs = torch.softmax(logits, dim=0)
         vals, idx = torch.sort(probs, descending=True)
         cum = torch.cumsum(vals, dim=0)
@@ -182,8 +164,7 @@ def soft_patch_grow(
         chosen_local = idx[:k]
         return node_ids[chosen_local]
 
-    # Main per-graph loop
-    src_all, dst_all = edge_index[0], edge_index[1]
+    eps = 1e-12
 
     for g in range(G):
         node_ids = torch.nonzero(batch == g, as_tuple=False).view(-1)  # global node ids
@@ -191,103 +172,67 @@ def soft_patch_grow(
         if n_g == 0:
             continue
 
-        # Select anchors (global ids)
         anchors_global = _select_anchors(node_ids)
         k_g = int(anchors_global.numel())
         if k_g == 0:
             continue
 
-        # Map global node ids to local [0..n_g-1]
-        global_to_local = torch.full((N,), -1, device=device, dtype=torch.long)
-        global_to_local[node_ids] = torch.arange(n_g, device=device, dtype=torch.long)
+        x_g = x[node_ids]       # [n_g, D]
+        pos_g = pos[node_ids]   # [n_g, 3]
 
-        anchors_local = global_to_local[anchors_global]  # [k_g]
+        # Map global anchor ids to local indices in [0, n_g)
+        node_ids_sorted, perm = torch.sort(node_ids)
+        pos_in_sorted = torch.searchsorted(node_ids_sorted, anchors_global)
+        anchors_local = perm[pos_in_sorted]  # [k_g]
 
-        # Extract edges belonging to this graph (both ends in this graph)
-        # Assumes batch is per node; keeps intra-graph edges only.
-        in_g_src = (batch[src_all] == g)
-        in_g_dst = (batch[dst_all] == g)
-        e_mask = in_g_src & in_g_dst
-        e_ids = torch.nonzero(e_mask, as_tuple=False).view(-1)
+        anchor_pos = pos_g[anchors_local]  # [k_g, 3]
+        anchor_bias = anchor_logits[anchors_global] if use_anchor_bias else None  # [k_g] or None
 
-        # If no edges, patches are just anchors
-        x_g = x[node_ids]  # [n_g, D]
+        # 2) soft assignment A: [n_g, k_g]
+        dist2 = ((pos_g[:, None, :] - anchor_pos[None, :, :]) ** 2).sum(dim=-1)  # [n_g, k_g]
+        scores = (-float(beta) * dist2)
+        if anchor_bias is not None:
+            scores = scores + anchor_bias[None, :]
 
-        if e_ids.numel() == 0:
-            # Each patch pools just the anchor atom
-            write_k = min(k_g, k_max)
-            for j in range(write_k):
-                a_loc = int(anchors_local[j].item())
-                patch_emb[g, j] = x_g[a_loc]
-                patch_mask[g, j] = True
-                anchor_index_out[g, j] = int(anchors_global[j].item())
-                if return_membership:
-                    membership_out[g, j, anchors_global[j]] = 1.0
-            # Track the maximum number of patches in this batch
-            actual_max_k = max(actual_max_k, write_k)
-            continue
+        A = torch.softmax(scores / max(float(tau), 1e-8), dim=1)  # [n_g, k_g], rows sum to 1
 
-        # Remap edges to local indices
-        src = global_to_local[src_all[e_ids]]  # [E_g]
-        dst = global_to_local[dst_all[e_ids]]  # [E_g]
-        w = edge_w[e_ids].to(dtype=x.dtype)    # [E_g] - ensure dtype matches x
+        # Optional per-patch top-r truncation (keeps most contributing nodes per patch)
+        if r_max is not None and int(r_max) < n_g:
+            AT = A.transpose(0, 1).contiguous()  # [k_g, n_g]
+            topv, topi = torch.topk(AT, k=int(r_max), dim=1, largest=True)
+            AT2 = torch.zeros_like(AT)
+            AT2.scatter_(1, topi, topv)
+            # Normalize per patch for pooling stability
+            AT2 = AT2 / (AT2.sum(dim=1, keepdim=True) + eps)
+            A_for_pool = AT2.transpose(0, 1)  # [n_g, k_g]
+        else:
+            # Normalize per patch for pooling stability
+            mass = A.sum(dim=0, keepdim=True)  # [1, k_g]
+            A_for_pool = A / (mass + eps)
 
-        # Normalize expansion weights per-source so each node distributes to neighbors stably.
-        # If a node has no outgoing edges, it simply does not send.
-        denom = torch.zeros((n_g,), device=device, dtype=x.dtype)
-        denom.index_add_(0, src, w)
-        w_norm = w / (denom[src] + 1e-12)      # [E_g]
+        # 3) pool: tokens [k_g, D]
+        tokens = A_for_pool.transpose(0, 1) @ x_g  # [k_g, D]
 
-        # Initialize membership matrix for all anchors: [k_g, n_g]
-        m = torch.zeros((k_g, n_g), device=device, dtype=x.dtype)
-        m[torch.arange(k_g, device=device), anchors_local] = 1.0  # one-hot anchors
-
-        # Growth turns
-        for _ in range(int(steps)):
-            # Send: each anchor row diffuses along edges
-            # msgs[:, dst] += m[:, src] * w_norm
-            msgs = torch.zeros_like(m)
-            msgs.index_add_(1, dst, m[:, src] * w_norm.unsqueeze(0))
-
-            # Keep + send
-            m = (float(keep_ratio) * m) + ((1.0 - float(keep_ratio)) * msgs)
-
-            # Enforce per-patch atom budget
-            if r_max is not None and r_max < n_g:
-                # Keep top-r per patch row
-                topv, topi = torch.topk(m, k=int(r_max), dim=1, largest=True)
-                m2 = torch.zeros_like(m)
-                m2.scatter_(1, topi, topv)
-                m = m2
-
-            # Renormalize per patch (mass conserving)
-            m = m / (m.sum(dim=1, keepdim=True) + 1e-12)
-
-        # Pool patch embeddings: [k_g, D] = [k_g, n_g] @ [n_g, D]
-        p = m @ x_g
-
-        # Write padded outputs
         write_k = min(k_g, k_max)
-        patch_emb[g, :write_k] = p[:write_k]
+        patch_emb[g, :write_k] = tokens[:write_k]
         patch_mask[g, :write_k] = True
         anchor_index_out[g, :write_k] = anchors_global[:write_k]
+
         if return_membership:
-            # store to global-N axis (sparse is better, but this is explicit)
-            for j in range(write_k):
-                membership_out[g, j, node_ids] = m[j]
-        
-        # Track the maximum number of patches in this batch
+            # Store normalized per-patch weights over global N
+            # membership_out[g, j, node_ids] = weights over nodes for patch j
+            W = A_for_pool.transpose(0, 1)  # [k_g, n_g]
+            membership_out[g, :write_k, node_ids] = W[:write_k]
+
         actual_max_k = max(actual_max_k, write_k)
 
-    # Truncate to actual maximum number of patches in this batch (saves memory & compute)
-    # Ensure at least 1 to avoid empty tensors
     actual_max_k = max(1, actual_max_k)
     patch_emb = patch_emb[:, :actual_max_k, :]
     patch_mask = patch_mask[:, :actual_max_k]
     anchor_index_out = anchor_index_out[:, :actual_max_k]
     if return_membership:
         membership_out = membership_out[:, :actual_max_k, :]
-    
+
     return PatchOutput(
         patch_emb=patch_emb,
         patch_mask=patch_mask,
@@ -305,31 +250,23 @@ if __name__ == "__main__":
     N = 100         # total nodes
     D = 128         # node embed dim
     Di = 256        # instruction dim
-    E = 400         # edges
-    De = 16         # edge attr dim
-
     instr = torch.randn(G, Di)
     x = torch.randn(N, D)
     batch = torch.randint(0, G, (N,))
-    edge_index = torch.randint(0, N, (2, E))
-    edge_attr = torch.randn(E, De)
+    pos = torch.randn(N, 3)
 
     anchor_gate = AnchorGate(node_dim=D, instr_dim=Di, hidden_dim=256)
-    edge_gate = EdgeGate(node_dim=D, instr_dim=Di, edge_attr_dim=De, hidden_dim=256)
-
     out = soft_patch_grow(
         instr=instr,
         x=x,
-        edge_index=edge_index,
+        pos=pos,
         batch=batch,
         anchor_gate=anchor_gate,
-        edge_gate=edge_gate,
-        edge_attr=edge_attr,
         k_max=16,
         r_max=64,
-        steps=3,
-        keep_ratio=0.6,
         dynamic_k_mass=0.8,     # set None for fixed top-k
+        beta=1.0,
+        tau=0.1,
         return_membership=False
     )
 

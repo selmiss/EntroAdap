@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .cross_attn import FusionBlock
 from .aa_encoder import AAEncoder
-from .gates import AnchorGate, EdgeGate, soft_patch_grow
+from .gates import AnchorGate, soft_patch_grow
 from .octopus_config import OctopusConfig, BaseConfig
 
 
@@ -100,17 +100,10 @@ class Octopus(PreTrainedModel):
         # Initialize with small weights for large downprojection (4096->256)
         self._init_projection(self.instr_proj, is_downprojection=True)
         
-        # 3. Anchor & Edge gates (accept projected instruction embeddings in encoder space)
+        # 3. Anchor gate (accept projected instruction embeddings in encoder space)
         self.anchor_gate = AnchorGate(
             node_dim=enc_cfg.hidden_dim,
             instr_dim=enc_cfg.hidden_dim,
-            hidden_dim=patch_cfg.gate_hidden_dim,
-            dropout=patch_cfg.gate_dropout,
-        )
-        self.edge_gate = EdgeGate(
-            node_dim=enc_cfg.hidden_dim,
-            instr_dim=enc_cfg.hidden_dim,
-            edge_attr_dim=enc_cfg.hidden_dim,
             hidden_dim=patch_cfg.gate_hidden_dim,
             dropout=patch_cfg.gate_dropout,
         )
@@ -285,10 +278,7 @@ class Octopus(PreTrainedModel):
         # Encode graph
         enc_out = self.encoder(graph_data, batch=batch)
         node_emb = enc_out['node_emb']  # [N, enc_dim]
-        edge_emb = enc_out['edge_emb']  # [E, enc_dim]
-        
-        # Extract edge_index
-        edge_index = enc_out['edge_index']
+        pos = enc_out['pos']  # [N, 3]
         
         # Project instruction embeddings from LLM space to encoder space
         # Apply normalization before projection to stabilize gradients
@@ -300,16 +290,14 @@ class Octopus(PreTrainedModel):
         patch_out = soft_patch_grow(
             instr=instr_emb_proj,
             x=node_emb,
-            edge_index=edge_index,
+            pos=pos,
             batch=batch,
             anchor_gate=self.anchor_gate,
-            edge_gate=self.edge_gate,
-            edge_attr=edge_emb,
             k_max=cfg.k_max,
             r_max=cfg.r_max,
-            steps=cfg.steps,
-            keep_ratio=cfg.keep_ratio,
             dynamic_k_mass=cfg.dynamic_k_mass,
+            beta=cfg.beta,
+            tau=cfg.tau,
             return_membership=False,
         )
         
@@ -888,7 +876,6 @@ class Octopus(PreTrainedModel):
             self.instr_norm,
             self.instr_proj,
             self.anchor_gate,
-            self.edge_gate,
             self.patch_norm_pre,
             self.node_norm_pre,
             self.patch_proj,
@@ -914,10 +901,9 @@ class Octopus(PreTrainedModel):
         print("Frozen LLM")
     
     def freeze_gates(self):
-        """Freeze anchor and edge gates."""
+        """Freeze the anchor gate."""
         self.anchor_gate.freeze()
-        self.edge_gate.freeze()
-        print("Frozen gates (anchor_gate, edge_gate)")
+        print("Frozen anchor gate")
     
     def freeze_fusion_blocks(self):
         """Freeze all fusion blocks."""

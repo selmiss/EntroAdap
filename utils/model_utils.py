@@ -288,6 +288,16 @@ def load_prepared_octopus_from_checkpoint(
         logger.info("All keys loaded successfully")
     
     logger.info("Prepared Octopus model loaded successfully from checkpoint")
+    
+    # Apply freezing configuration
+    freeze_config = {
+        'freeze_encoder': getattr(multimodal_config, 'freeze_encoder', False),
+        'freeze_llm': getattr(multimodal_config, 'freeze_llm', False),
+        'freeze_gates': getattr(multimodal_config, 'freeze_gates', False),
+        'freeze_fusion_blocks': getattr(multimodal_config, 'freeze_fusion_blocks', False),
+        'freeze_projections': getattr(multimodal_config, 'freeze_projections', False),
+    }
+    multimodal_model.apply_freezing_config(freeze_config)
 
     return multimodal_model
 
@@ -575,7 +585,13 @@ def get_custom_model(
     
     mm_config = OctopusConfig(
         encoder=EncoderConfig(hidden_dim=int(encoder_dim)),
-        patching=PatchingConfig(),  # use defaults; patching-specific knobs are not exposed in OctopusConfig
+        patching=PatchingConfig(
+            k_max=int(multimodal_config.k_max),
+            r_max=multimodal_config.r_max,
+            dynamic_k_mass=multimodal_config.dynamic_k_mass,
+            beta=float(multimodal_config.beta),
+            tau=float(multimodal_config.tau),
+        ),
         fusion=FusionConfig(
             num_blocks=int(multimodal_config.num_fusion_blocks),
             num_heads=int(multimodal_config.num_attention_heads),

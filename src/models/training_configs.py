@@ -95,6 +95,28 @@ class OctopusConfig:
         default=2048,
         metadata={"help": "Maximum sequence length for multimodal training."}
     )
+
+    # Patching (anchor/patch selection) parameters
+    k_max: int = field(
+        default=256,
+        metadata={"help": "Maximum number of anchors/patches per graph."}
+    )
+    r_max: Optional[int] = field(
+        default=1024,
+        metadata={"help": "Maximum nodes kept per patch. Set to None to disable truncation."}
+    )
+    dynamic_k_mass: Optional[float] = field(
+        default=0.1,
+        metadata={"help": "Anchor selection mass threshold. Set to None for fixed top-k."}
+    )
+    beta: float = field(
+        default=1.0,
+        metadata={"help": "Distance scale for soft assignment (higher = sharper)."}
+    )
+    tau: float = field(
+        default=0.1,
+        metadata={"help": "Softmax temperature for assignment (lower = sharper)."}
+    )
     
     # Runtime filtering parameters
     max_atoms: Optional[int] = field(

@@ -1,5 +1,6 @@
 # Environment variables
 /dq_data
+/tmp
 /srun
 /local_env.sh
 /env.sh

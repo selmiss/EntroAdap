@@ -20,8 +20,8 @@ class PatchingConfig:
     """Configuration for instruction-conditioned patching."""
     k_max: int = 256                          # Max patches per graph
     r_max: int = 1024                          # Max nodes per patch
-    steps: int = 7                           # Patch growth iterations
-    keep_ratio: float = 0.92                  # Membership retention per step
+    beta: float = 1.0                        # Distance scale for soft assignments
+    tau: float = 0.1                         # Softmax temperature for assignments
     dynamic_k_mass: Optional[float] = 0.1   # Mass-based anchor selection (e.g., 0.8)
     gate_hidden_dim: int = 256               # Gate MLP hidden dimension
     gate_dropout: float = 0.0                # Gate dropout
@@ -100,7 +100,7 @@ class SmallConfig(OctopusConfig):
         hidden_dim=128, num_layers=3, dropout=0.1
     ))
     patching: PatchingConfig = field(default_factory=lambda: PatchingConfig(
-        k_max=16, r_max=32, steps=2, gate_hidden_dim=128
+        k_max=16, r_max=32, beta=1.0, tau=0.1, gate_hidden_dim=128
     ))
     fusion: FusionConfig = field(default_factory=lambda: FusionConfig(
         num_blocks=2, num_heads=4, dropout=0.1
@@ -114,7 +114,7 @@ class BaseConfig(OctopusConfig):
         hidden_dim=256, num_layers=6, dropout=0.1
     ))
     patching: PatchingConfig = field(default_factory=lambda: PatchingConfig(
-        k_max=32, r_max=64, steps=3, gate_hidden_dim=256
+        k_max=32, r_max=64, beta=1.0, tau=0.1, gate_hidden_dim=256
     ))
     fusion: FusionConfig = field(default_factory=lambda: FusionConfig(
         num_blocks=4, num_heads=8, dropout=0.1
@@ -128,7 +128,7 @@ class LargeConfig(OctopusConfig):
         hidden_dim=512, num_layers=12, dropout=0.1
     ))
     patching: PatchingConfig = field(default_factory=lambda: PatchingConfig(
-        k_max=64, r_max=128, steps=4, gate_hidden_dim=512
+        k_max=64, r_max=128, beta=1.0, tau=0.1, gate_hidden_dim=512
     ))
     fusion: FusionConfig = field(default_factory=lambda: FusionConfig(
         num_blocks=6, num_heads=16, dropout=0.1

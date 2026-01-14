@@ -1,0 +1,134 @@
+# Octopus fine-tuning configuration with MULTIPLE DATASETS
+# This config demonstrates different ways to specify datasets
+# Model configuration
+model_name_or_path: unsloth/Llama-3.1-8B-Instruct  # Small but realistic Qwen2 model (~1GB)
+
+# Encoder initialization from pretrained checkpoint (optional)
+# If specified, loads the encoder weights from a pretrained checkpoint before training
+# Example: encoder_checkpoint_path: checkpoints/aa_encoder_multi_limited
+encoder_checkpoint_path: checkpoints/aa_all_modality  # Set to checkpoint path to load pretrained encoder weights
+# Dataset configuration - Multiple options:
+# 
+# Option 1: List of files and directories (RECOMMENDED for flexibility)
+# Each item can be:
+#   - A directory: loads all .parquet files recursively
+#   - A specific file: loads just that file
+dataset_name:
+  - data/sft/molecule_4A/comprehensive_conversations-preprocessed_part_1.parquet
+  - data/sft/molecule_4A/detailed_structural_descriptions-preprocessed_part_1.parquet
+  - data/sft/protein/protein_sft_flat.parquet
+  - data/sft/nacid/dna_sft_part002.parquet
+  - data/sft/nacid/rna_sft_part004.parquet
+
+# Maximum samples per dataset (optional)
+# Can be:
+#   - null or omitted: no limit (use all samples)
+#   - A single integer: apply same limit to all datasets
+#   - A list: per-dataset limits (must match dataset_name length)
+# Examples:
+#   dataset_max_samples: 1000              # Limit all datasets to 1000 samples each
+#   dataset_max_samples: [500, 500, 1000, 2000, 2000]  # Per-dataset limits
+dataset_max_samples:
+  - 3000   # molecule comprehensive_conversations
+  - 3000   # molecule detailed_structural_descriptions
+  - 2000  # protein
+  - 2000  # dna
+  - 2000  # rna
+
+eval_split_ratio: 0.1
+
+# Training hyperparameters
+learning_rate: 1.0e-4  # Reduced from 5e-4 to prevent gradient explosion
+num_train_epochs: 4  # Quick test - just 2 epochs
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 16
+max_grad_norm: 1.0  # CRITICAL: Gradient clipping to prevent explosion
+warmup_steps: 100  # Warmup to gradually increase LR
+# Logging level for the main process
+log_level: info        # one of: debug, info, warning, error, critical
+
+# Optimization settings
+gradient_checkpointing: true  # Enable for memory efficiency
+bf16: true  # Use bf16 like production
+use_liger_kernel: false  # Test Liger integration
+# Optimizer settings for stability
+optim: adamw_torch  # Use AdamW optimizer
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1e-8
+weight_decay: 0.01  # L2 regularization to prevent overfitting
+
+# LoRA/PEFT configuration
+use_peft: false  # No LoRA needed when LLM is frozen
+lora_r: 8  # (ignored when use_peft: false)
+lora_alpha: 16
+lora_dropout: 0.05
+
+# DeepSpeed configuration - optional for testing
+# deepspeed: configs/deepspeed/ds_config_zero2.json
+
+# Output configuration
+output_dir: ./checkpoints/octopus/Llama-3.1-8B-s2-v3
+
+# Logging and evaluation
+logging_steps: 10  # Log every step for testing
+save_strategy: "steps"  # Don't save checkpoints for testing
+save_steps: 500
+save_total_limit: 3
+
+# Training strategy
+eval_strategy: "steps"  # Evaluate during training
+eval_steps: 100  # Evaluate every 100 steps
+
+# Reporting configuration
+# Options for report_to: ["wandb"], ["tensorboard"], ["all"], or []
+# Set to ["wandb"] to enable online Weights & Biases logging
+report_to: ["wandb"]  # Enable wandb logging
+
+# Wandb configuration (used when "wandb" in report_to)
+wandb_project: "octopus-sft-s2"  # Your wandb project name
+run_name: "llama-3.1-8b-instruct-stage2-v3"  # Specific run name (optional, auto-generated if not provided)
+# wandb_entity: "your-entity"  # Your wandb entity/team (optional)
+
+remove_unused_columns: false  # CRITICAL: Keep graph_data and multimodal columns
+
+# DataLoader configuration for efficient data loading
+dataloader_num_workers: 8  # Parallel data loading (adjust based on CPU cores)
+dataloader_prefetch_factor: 4  # Prefetch 2 batches per worker
+dataloader_pin_memory: true  # Faster CPU->GPU transfer
+dataloader_persistent_workers: true  # Keep workers alive between epochs
+
+# Octopus configuration - scaled for Llama-3.1-8B-Instruct
+use_custom_model: true
+encoder_hidden_dim: 256  # Match pretrained encoder checkpoint (aa_encoder_multi_limited was trained with 256)
+modality_embedding_dim: 4096  # Match Llama-3.1-8B hidden_size=4096 for fusion blocks
+num_fusion_blocks: 8  # Fewer blocks for faster testing
+num_attention_heads: 32  # Match Llama-3.1-8B (it has 32 heads)
+fusion_hidden_dim: null  # defaults to modality_embedding_dim (4096)
+fusion_intermediate_dim: null  # defaults to 4 * fusion_hidden_dim (16384)
+dropout: 0.1
+max_seq_length: 2048  # Maximum sequence (instruction) length for multimodal training
+k_max: 256              # Max anchors/patches per graph (top-k)
+r_max: null              # Max nodes per patch (set null for fully soft pooling)
+dynamic_k_mass: 0.1    # Mass-based anchor selection (set null for fixed top-k)
+beta: 1.0              # Distance scale for soft assignment
+tau: 0.1               # Softmax temperature for assignment
+
+
+# Runtime filtering thresholds for structures
+# These filter graph structures during training (not during preprocessing)
+# Structures exceeding these limits will be automatically skipped during data loading
+# via the collator's skip_on_error mechanism (efficient, no upfront cost)
+max_atoms: 30000       # Maximum atoms per structure (null = no limit, e.g., 30000)
+max_edges: 500000       # Maximum edges per structure (null = no limit, e.g., 500000)
+skip_on_error: true   # Skip samples that fail to load or exceed thresholds
+
+# Freezing options for training - control which components to freeze
+# Training strategy: Freeze LLM, train multimodal connector components
+freeze_encoder: true       # Freeze the graph encoder (already pre-trained)
+freeze_llm: true          # Freeze the LLM completely (no LoRA)
+freeze_gates: false        # TRAIN anchor and edge gates (connector)
+freeze_fusion_blocks: false  # TRAIN fusion blocks (connector)
+freeze_projections: false  # TRAIN all projection layers (connector)
+
