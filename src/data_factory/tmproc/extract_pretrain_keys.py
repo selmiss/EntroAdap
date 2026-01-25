@@ -74,7 +74,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/home/UWO/zjing29/proj/EntroAdap/data/raw",
+        default="",
         help="Directory to save output parquet files"
     )
     parser.add_argument(
@@ -119,7 +119,7 @@ def main():
     # Directory mode (original behavior)
     if not args.input_dir:
         # Default to DQ-Former pretrain directory if nothing specified
-        args.input_dir = "/home/UWO/zjing29/proj/DQ-Former/data/pretrain"
+        args.input_dir = ""
     
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)

@@ -74,13 +74,13 @@ def main():
     parser.add_argument(
         "--input_dir",
         type=str,
-        default="/home/UWO/zjing29/proj/EntroAdap/data/raw",
+        default="data/raw",
         help="Directory containing full dataset"
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/home/UWO/zjing29/proj/EntroAdap/data/raw/small",
+        default="data/raw/small",
         help="Directory to save small dataset"
     )
     parser.add_argument(

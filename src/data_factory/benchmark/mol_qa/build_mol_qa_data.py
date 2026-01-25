@@ -291,7 +291,7 @@ def main():
     parser.add_argument(
         '--input_dir',
         type=str,
-        default='/home/UWO/zjing29/proj/DQ-Former/data/mol_qa',
+        default='xxx/data/mol_qa',
         help='Directory containing JSONL files'
     )
     parser.add_argument(

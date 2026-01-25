@@ -16,7 +16,7 @@ fi
 
 # Run the extraction script
 python src/data_factory/tmproc/extract_pretrain_keys.py \
-    --input_file /home/UWO/zjing29/proj/DQ-Former/data/tmpft/comprehensive_conversations-preprocessed.jsonl \
+    --input_file xxx/data/tmpft/comprehensive_conversations-preprocessed.jsonl \
     --output_dir data/raw/mol_sft_all \
     --keys smiles brics_gid cid iupac_name messages
 
