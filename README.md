@@ -1,4 +1,4 @@
-## Cuttlefish (ICML double-blind): Scaling-Aware Adapter for Structure-Grounded LLM Reasoning
+## Cuttlefish: Scaling-Aware Adapter for Structure-Grounded LLM Reasoning
 
 **Status**: This repository is **an anonymized artifact under double-blind review at ICML**. Please do not attempt to deanonymize the authors.
 
