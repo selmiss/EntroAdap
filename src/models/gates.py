@@ -44,6 +44,7 @@ class AnchorGate(nn.Module):
             param.requires_grad = False
 
 
+# Not used any more
 class EdgeGate(nn.Module):
     """
     Scores each edge for expansion, conditioned on instruction.
@@ -110,7 +111,7 @@ def soft_patch_grow(
     anchor_gate: AnchorGate,
     k_max: int = 32,
     r_max: Optional[int] = 64,           # top-r nodes per patch (optional, nondifferentiable)
-    dynamic_k_mass: Optional[float] = 0.8,
+    dynamic_k_mass: Optional[float] = 0.1,
     beta: Optional[float] = None,        # distance scale; if None uses 1.0
     tau: float = 0.1,                    # softmax temperature
     use_anchor_bias: bool = True,        # add anchor logit bias to each patch
